@@ -122,39 +122,63 @@ export class CardLogic extends Component {
         tween(uiOpacity).to(0.1, { opacity: 255 }).delay(0.4).to(0.5, { opacity: 0 }).call(() => { if (isValid(feedbackNode)) feedbackNode.destroy(); }).start();
     }
 
-    executeStackMove(nodesToMove: Node[], target: CardLogic) {
-        // Success sound removed from here to trigger later with animations
-        const targetLayout = target.getComponent(Layout);
-        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition());
-        
-        if (this.gameManager) {
-            this.gameManager.addValidMove();
-        }
-
-        nodesToMove.forEach(cardNode => { cardNode.setParent(target.node); });
-        if (targetLayout) targetLayout.updateLayout();
-
-        nodesToMove.forEach((cardNode, index) => {
-            const targetLocalPos = cardNode.getPosition();
-            cardNode.setWorldPosition(startWorldPositions[index]);
-
-            tween(cardNode)
-                .to(0.5 + (index * 0.05), { position: targetLocalPos }, { 
-                    easing: 'sineOut',
-                    onComplete: () => {
-                        if (index === nodesToMove.length - 1) {
-                            if (targetLayout) targetLayout.updateLayout();
-                            this.playSuccessEffect(cardNode); 
-                            this.checkAndFlipRevealedCard(); 
-                        }
-                    }
-                })
-                .start();
-        });
-
-        this.updatePlaceholderVisibility();
-        target.updatePlaceholderVisibility();
+executeStackMove(nodesToMove: Node[], target: CardLogic) {
+    const targetLayout = target.getComponent(Layout);
+    if (this.gameManager) {
+        // PASS THIS NODE so the manager can check if it's the 'progression' node
+        this.gameManager.addValidMove(this.node); 
     }
+    
+    // 1. Snapshot world positions
+    const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+    
+    // 2. THE SECRET SAUCE: Make cards invisible BEFORE reparenting
+    // This ensures that even if Cocos renders a frame mid-process, there's nothing to see.
+    nodesToMove.forEach(cardNode => {
+        const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+        op.opacity = 0;
+    });
+
+    // 3. Hierarchy Change & Teleport back to start
+    nodesToMove.forEach((cardNode, index) => { 
+        cardNode.setParent(target.node); 
+        cardNode.setWorldPosition(startWorldPositions[index]);
+    });
+
+    // 4. Force Layout math (Cards are still invisible at the source world position)
+    target.updatePlaceholderVisibility(); 
+    if (targetLayout) {
+        targetLayout.updateLayout(); 
+    }
+
+    // 5. Animation Loop
+    nodesToMove.forEach((cardNode, index) => {
+        // Capture the target calculated by layout
+        const finalLocalPos = cardNode.getPosition().clone(); 
+        
+        // Ensure it's still at the visual start
+        cardNode.setWorldPosition(startWorldPositions[index]);
+
+        // 6. Reveal and Move
+        const op = cardNode.getComponent(UIOpacity)!;
+        op.opacity = 255; // Show it now that it's positioned at the START
+
+        tween(cardNode)
+            .to(0.5 + (index * 0.05), { position: finalLocalPos }, { 
+                easing: 'sineOut',
+                onComplete: () => {
+                    if (index === nodesToMove.length - 1) {
+                        this.playSuccessEffect(cardNode); 
+                        this.checkAndFlipRevealedCard(); 
+                        if (targetLayout) targetLayout.updateLayout();
+                    }
+                }
+            })
+            .start();
+    });
+
+    this.updatePlaceholderVisibility();
+}
 
     private playSFX(clip: AudioClip) {
         if (clip && this._audioSource) {
@@ -177,7 +201,7 @@ export class CardLogic extends Component {
         ring.addComponent(UITransform).setContentSize(150, 150);
         effectContainer.addChild(ring);
 
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 15; i++) {
             const star = new Node('Star');
             const starSprite = star.addComponent(Sprite);
             starSprite.spriteFrame = this.starSprite;
@@ -193,7 +217,7 @@ export class CardLogic extends Component {
         effectContainer.setScale(new Vec3(0.5, 0.5, 1));
         
         tween(effectContainer)
-            .to(0.5, { scale: new Vec3(4.5, 4.5, 1) }, { easing: 'sineOut' })
+            .to(0.3, { scale: new Vec3(2.5, 2.5, 1) }, { easing: 'sineOut' })
             .start();
 
         const opacityComp = effectContainer.addComponent(UIOpacity);

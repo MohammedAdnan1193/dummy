@@ -5,16 +5,19 @@ const { ccclass, property } = _decorator;
 export class GameManager extends Component {
 
     @property(Node)
-    public introNode: Node = null!; // The 1-second intro screen
+    public introNode: Node = null!;
 
     @property(Node)
-    public mainNode: Node = null!;  // Container for the game board
+    public mainNode: Node = null!;
 
     @property(Node)
-    public mainLabel: Node = null!; // Label inside mainNode to be disabled on CTA
+    public mainLabel: Node = null!;
 
     @property({ tooltip: "Total moves required to show CTA" })
     public stepsToCTA: number = 3;
+
+    @property({ type: [Node], tooltip: "Assign the specific holders that MUST be clicked to advance each guide step" })
+    public progressionNodes: Node[] = [];
 
     @property({ type: [Node], tooltip: "Assign the specific Glow nodes for each step" })
     public glowNodes: Node[] = [];
@@ -23,7 +26,7 @@ export class GameManager extends Component {
     public handNodes: Node[] = [];
 
     @property(Node)
-    public ctaScreen: Node = null!; // The final conversion screen
+    public ctaScreen: Node = null!;
 
     private _currentStep: number = 0;
 
@@ -31,7 +34,6 @@ export class GameManager extends Component {
         // 1. Initial State Setup
         if (this.ctaScreen) {
             this.ctaScreen.active = false;
-            // Ensure CTA has UIOpacity for fading
             if (!this.ctaScreen.getComponent(UIOpacity)) this.ctaScreen.addComponent(UIOpacity);
         }
 
@@ -72,33 +74,39 @@ export class GameManager extends Component {
             tween(mainOp).to(0.3, { opacity: 255 }).start();
         }
 
-        // Show first guide immediately and instantly (no intro animation)
+        // Show first guide step immediately
         this.toggleGuide(0, true, true); 
     }
 
     /**
-     * Logic-First: Called by CardLogic immediately on valid move detection.
-     * This is asynchronous to card animations.
+     * Called by CardLogic. 
+     * Progresses the tutorial ONLY if the clickedNode matches the progressionNode for the current step.
      */
-    public addValidMove() {
-        // 1. Hide current guide indicators immediately
-        this.toggleGuide(this._currentStep, false);
+    public addValidMove(clickedNode: Node) {
+        const expectedNode = this.progressionNodes[this._currentStep];
 
-        this._currentStep++;
-        
-        // 2. Check for CTA trigger
-        if (this._currentStep >= this.stepsToCTA) {
-            this.showCTA();
+        if (clickedNode === expectedNode) {
+            // PROGRESSION MOVE: Advance the tutorial
+            this.toggleGuide(this._currentStep, false);
+            this._currentStep++;
+            
+            if (this._currentStep >= this.stepsToCTA) {
+                this.showCTA();
+            } else {
+                const nextIndex = this._currentStep;
+                this.unschedule(this.showDelayedGuide);
+                this.scheduleOnce(() => this.showDelayedGuide(nextIndex), 1.2);
+            }
         } else {
-            // 3. Schedule next guide with a delay to allow cards to land
-            const nextIndex = this._currentStep;
-            this.unschedule(this.showDelayedGuide); // Clear any pending reveals
-            this.scheduleOnce(() => this.showDelayedGuide(nextIndex), 1.2);
+            // FREESTYLE MOVE: Hand stays/re-shines for the same step
+            console.log("[GameManager] Valid move, but not the tutorial path.");
+            this.toggleGuide(this._currentStep, false);
+            this.unschedule(this.showDelayedGuide);
+            this.scheduleOnce(() => this.showDelayedGuide(this._currentStep), 0.5);
         }
     }
 
     private showDelayedGuide(index: number) {
-        // Guard: ensure we haven't clicked past this step already
         if (index === this._currentStep && index < this.stepsToCTA) {
             this.toggleGuide(index, true, false);
         }
@@ -109,64 +117,37 @@ export class GameManager extends Component {
         const hand = this.handNodes[index];
 
         if (show) {
-            if (glow) {
-                glow.active = true;
-                this.fadeInAndStartGlow(glow, isInitial);
-            }
-            if (hand) {
-                hand.active = true;
-                this.fadeInHand(hand, isInitial);
-            }
+            if (glow) { glow.active = true; this.fadeInAndStartGlow(glow, isInitial); }
+            if (hand) { hand.active = true; this.fadeInHand(hand, isInitial); }
         } else {
-            if (glow) {
-                const op = glow.getComponent(UIOpacity);
-                if (op) tween(op).stop();
-                glow.active = false;
-            }
-            if (hand) {
-                const op = hand.getComponent(UIOpacity);
-                if (op) tween(op).stop();
-                hand.active = false;
-            }
+            if (glow) { glow.active = false; }
+            if (hand) { hand.active = false; }
         }
     }
 
     private fadeInAndStartGlow(node: Node, instant: boolean) {
         const op = node.getComponent(UIOpacity) || node.addComponent(UIOpacity);
         tween(op).stop();
-
         if (instant) {
             op.opacity = 100;
             this.startGlowLoop(op);
         } else {
             op.opacity = 0;
-            tween(op)
-                .to(0.4, { opacity: 100 }, { easing: 'sineOut' })
-                .call(() => this.startGlowLoop(op))
-                .start();
+            tween(op).to(0.4, { opacity: 100 }).call(() => this.startGlowLoop(op)).start();
         }
     }
 
     private startGlowLoop(op: UIOpacity) {
-        tween(op)
-            .repeatForever(
-                tween()
-                    .to(0.5, { opacity: 255 }, { easing: 'sineInOut' })
-                    .to(0.5, { opacity: 100 }, { easing: 'sineInOut' })
-            )
-            .start();
+        tween(op).repeatForever(
+            tween().to(0.5, { opacity: 255 }, { easing: 'sineInOut' }).to(0.5, { opacity: 100 }, { easing: 'sineInOut' })
+        ).start();
     }
 
     private fadeInHand(node: Node, instant: boolean) {
         const op = node.getComponent(UIOpacity) || node.addComponent(UIOpacity);
         tween(op).stop();
-
-        if (instant) {
-            op.opacity = 255;
-        } else {
-            op.opacity = 0;
-            tween(op).to(0.4, { opacity: 255 }, { easing: 'sineOut' }).start();
-        }
+        if (instant) { op.opacity = 255; } 
+        else { op.opacity = 0; tween(op).to(0.4, { opacity: 255 }).start(); }
     }
 
     private hideAllGuides() {
@@ -177,36 +158,27 @@ export class GameManager extends Component {
     private showCTA() {
         if (!this.ctaScreen || this.ctaScreen.active) return;
         
-        // Disable gameplay label
         if (this.mainLabel) this.mainLabel.active = false;
 
         this.ctaScreen.active = true;
         const op = this.ctaScreen.getComponent(UIOpacity)!;
-        
         op.opacity = 0;
-        this.ctaScreen.setScale(new Vec3(0, 0, 1)); // Pop from 0
+        this.ctaScreen.setScale(new Vec3(0, 0, 1));
 
-        // Fade in
         tween(op).to(0.3, { opacity: 255 }).start();
 
-        // Pop Entrance Animation
+        // Pop Animation
         tween(this.ctaScreen)
-            .to(0.5, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'backOut' }) // Overshoot
-            .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })   // Settle
-            // .call(() => {
-            //     this.playCTAPulse(); // Start idle pulse
-            // })
+            .to(0.5, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'backOut' })
+            .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+            .call(() => this.playCTAPulse())
             .start();
     }
 
     private playCTAPulse() {
         if (!isValid(this.ctaScreen)) return;
-        tween(this.ctaScreen)
-            .repeatForever(
-                tween()
-                    .to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' })
-                    .to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
-            )
-            .start();
+        tween(this.ctaScreen).repeatForever(
+            tween().to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' }).to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+        ).start();
     }
 }
