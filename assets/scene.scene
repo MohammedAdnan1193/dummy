@@ -92,7 +92,7 @@
     "_prefab": null,
     "_lpos": {
       "__type__": "cc.Vec3",
-      "x": 740,
+      "x": 720,
       "y": 360.00000000000006,
       "z": 0
     },
@@ -590,8 +590,8 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 1480,
-      "height": 720
+      "width": 1584,
+      "height": 792
     },
     "_anchorPoint": {
       "__type__": "cc.Vec2",
@@ -651,22 +651,22 @@
     "__prefab": null,
     "_alignFlags": 45,
     "_target": null,
-    "_left": 0,
-    "_right": 0,
-    "_top": 0,
-    "_bottom": 0,
+    "_left": -0.05,
+    "_right": -0.05,
+    "_top": -0.05,
+    "_bottom": -0.05,
     "_horizontalCenter": 0,
     "_verticalCenter": 0,
-    "_isAbsLeft": true,
-    "_isAbsRight": true,
-    "_isAbsTop": true,
-    "_isAbsBottom": true,
+    "_isAbsLeft": false,
+    "_isAbsRight": false,
+    "_isAbsTop": false,
+    "_isAbsBottom": false,
     "_isAbsHorizontalCenter": true,
     "_isAbsVerticalCenter": true,
-    "_originalWidth": 1246.4,
-    "_originalHeight": 720,
+    "_originalWidth": 1500,
+    "_originalHeight": 1500,
     "_alignMode": 2,
-    "_lockFlags": 45,
+    "_lockFlags": 0,
     "_id": "87vnFYLORFx7lB97qHvq9Y"
   },
   {
@@ -697,7 +697,7 @@
     "_prefab": null,
     "_lpos": {
       "__type__": "cc.Vec3",
-      "x": -390,
+      "x": -370,
       "y": 45.14728749066592,
       "z": 0
     },
@@ -1191,7 +1191,7 @@
     },
     "_enabled": true,
     "__prefab": null,
-    "targetUrl": "https://www.google.com",
+    "targetUrl": "https://play.google.com/store/apps/details?id=nova.solitaire.patience.card.games.klondike.free",
     "_id": "8203Na14xDb7IwZtpvwufB"
   },
   {
@@ -1392,8 +1392,8 @@
     "_prefab": null,
     "_lpos": {
       "__type__": "cc.Vec3",
-      "x": 143.68599999999992,
-      "y": 0,
+      "x": 118.68599999999992,
+      "y": -5,
       "z": 0
     },
     "_lrot": {
@@ -1405,8 +1405,8 @@
     },
     "_lscale": {
       "__type__": "cc.Vec3",
-      "x": 0.9,
-      "y": 0.9,
+      "x": 1,
+      "y": 1,
       "z": 1
     },
     "_mobility": 0,
@@ -8629,7 +8629,7 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 1480,
+      "width": 1440,
       "height": 720
     },
     "_anchorPoint": {
@@ -9663,7 +9663,7 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 1480,
+      "width": 1440,
       "height": 720
     },
     "_anchorPoint": {
@@ -11033,7 +11033,7 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 1480,
+      "width": 1440,
       "height": 720
     },
     "_anchorPoint": {
