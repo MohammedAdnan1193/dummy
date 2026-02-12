@@ -29,6 +29,9 @@ export class GameManager extends Component {
     public ctaScreen: Node = null!;
 
     private _currentStep: number = 0;
+    
+    @property(Node)
+    public globalOverlay: Node = null!;
 
     onLoad() {
         // 1. Initial State Setup

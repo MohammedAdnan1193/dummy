@@ -40,16 +40,29 @@ export class CardLogic extends Component {
     private _audioSource: AudioSource = null!;
 
     onLoad() {
+        // console.log(`[CardLogic] Initializing holder: ${this.node.name}`);
         this._audioSource = this.getComponent(AudioSource) || this.addComponent(AudioSource);
         this.node.on(Node.EventType.TOUCH_START, this.onHolderClicked, this);
         this.updatePlaceholderVisibility();
     }
 
     getCardData(cardNode: Node): CardData | null {
-        if (!cardNode.active || cardNode.name === "default" || cardNode.name.includes("faceDown")) return null;
+        // 1. ROBUSTNESS CHECK: Immediately reject effects/feedback nodes
+        if (!cardNode.active || 
+            cardNode.name === "default" || 
+            cardNode.name.includes("faceDown") ||
+            cardNode.name === "WrongClickFeedback" || // Explicit rejection
+            !cardNode.name.startsWith("card")) {      // Catch-all rejection
+            return null;
+        }
+        
         const indexStr = cardNode.name.replace("card", "");
         const index = parseInt(indexStr);
-        if (isNaN(index)) return null;
+        
+        if (isNaN(index)) {
+            // console.warn(`[CardLogic] Failed to parse index from card name: ${cardNode.name}`);
+            return null;
+        }
 
         return {
             value: index % 13,
@@ -60,8 +73,22 @@ export class CardLogic extends Component {
     }
 
     onHolderClicked(event: EventTouch) {
+        // console.log(`\n[CardLogic] Click detected on ${this.node.name}`);
+
+        // 1. SAFETY CHECK: Animation Busy
+        const activeFlippers = this.node.getComponentsInChildren(CardFlipper);
+        const isBusy = activeFlippers.some(flipper => flipper.isFlipping);
+        if (isBusy) {
+            console.warn(`[CardLogic] 🛑 INPUT BLOCKED: Animation in progress.`);
+            return; 
+        }
+
+        // 2. STRICT FILTER: Only get nodes that are explicitly named "card..."
+        // This ignores "WrongClickFeedback", "EffectContainer", etc.
         const faceUpCards = this.node.children.filter(c => 
-            c !== this.placeholderNode && !c.name.includes("faceDown") && c.active
+            c !== this.placeholderNode && 
+            c.active &&
+            c.name.startsWith("card") // <--- KEY FIX: Must start with "card"
         );
 
         if (faceUpCards.length > 0) {
@@ -82,9 +109,16 @@ export class CardLogic extends Component {
 
     findValidMove(movingData: CardData, sequence: Node[]): boolean {
         const allHolders = this.node.parent!.getComponentsInChildren(CardLogic);
+        
         for (const target of allHolders) {
             if (target === this) continue;
-            const targetChildren = target.node.children.filter(c => c !== target.placeholderNode);
+            
+            // STRICT FILTER here too: Ignore effects in other columns
+            const targetChildren = target.node.children.filter(c => 
+                c !== target.placeholderNode && 
+                (c.name.startsWith("card") || c.name.includes("faceDown"))
+            );
+
             const isTargetEmpty = targetChildren.length === 0;
 
             if (isTargetEmpty && movingData.value === 12) {
@@ -94,7 +128,9 @@ export class CardLogic extends Component {
 
             if (!isTargetEmpty) {
                 const bottomTarget = targetChildren[targetChildren.length - 1];
-                const targetData = this.getCardData(bottomTarget);
+                // getCardData now returns null for "WrongClickFeedback", so this is safe
+                const targetData = this.getCardData(bottomTarget); 
+                
                 if (targetData && targetData.isRed !== movingData.isRed && targetData.value === movingData.value + 1) {
                     this.executeStackMove(sequence, target);
                     return true;
@@ -119,79 +155,101 @@ export class CardLogic extends Component {
         const localPos = this.node.getComponent(UITransform)!.convertToNodeSpaceAR(worldPos);
         feedbackNode.setPosition(localPos);
 
-        tween(uiOpacity).to(0.1, { opacity: 255 }).delay(0.4).to(0.5, { opacity: 0 }).call(() => { if (isValid(feedbackNode)) feedbackNode.destroy(); }).start();
-    }
-
-executeStackMove(nodesToMove: Node[], target: CardLogic) {
-    const targetLayout = target.getComponent(Layout);
-    if (this.gameManager) {
-        // PASS THIS NODE so the manager can check if it's the 'progression' node
-        this.gameManager.addValidMove(this.node); 
-    }
-    
-    // 1. Snapshot world positions
-    const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-    
-    // 2. THE SECRET SAUCE: Make cards invisible BEFORE reparenting
-    // This ensures that even if Cocos renders a frame mid-process, there's nothing to see.
-    nodesToMove.forEach(cardNode => {
-        const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
-        op.opacity = 0;
-    });
-
-    // 3. Hierarchy Change & Teleport back to start
-    nodesToMove.forEach((cardNode, index) => { 
-        cardNode.setParent(target.node); 
-        cardNode.setWorldPosition(startWorldPositions[index]);
-    });
-
-    // 4. Force Layout math (Cards are still invisible at the source world position)
-    target.updatePlaceholderVisibility(); 
-    if (targetLayout) {
-        targetLayout.updateLayout(); 
-    }
-
-    // 5. Animation Loop
-    nodesToMove.forEach((cardNode, index) => {
-        // Capture the target calculated by layout
-        const finalLocalPos = cardNode.getPosition().clone(); 
-        
-        // Ensure it's still at the visual start
-        cardNode.setWorldPosition(startWorldPositions[index]);
-
-        // 6. Reveal and Move
-        const op = cardNode.getComponent(UIOpacity)!;
-        op.opacity = 255; // Show it now that it's positioned at the START
-
-        tween(cardNode)
-            .to(0.5 + (index * 0.05), { position: finalLocalPos }, { 
-                easing: 'sineOut',
-                onComplete: () => {
-                    if (index === nodesToMove.length - 1) {
-                        this.playSuccessEffect(cardNode); 
-                        this.checkAndFlipRevealedCard(); 
-                        if (targetLayout) targetLayout.updateLayout();
-                    }
-                }
+        tween(uiOpacity)
+            .to(0.1, { opacity: 255 })
+            .delay(0.4)
+            .to(0.5, { opacity: 0 })
+            .call(() => { 
+                if (isValid(feedbackNode)) feedbackNode.destroy(); 
             })
             .start();
-    });
+    }
 
-    this.updatePlaceholderVisibility();
-}
+    executeStackMove(nodesToMove: Node[], target: CardLogic) {
+        if (!this.gameManager || !this.gameManager.globalOverlay) {
+            console.error("[CardLogic] ERROR: GameManager/Overlay missing");
+            return;
+        }
 
-    private playSFX(clip: AudioClip) {
-        if (clip && this._audioSource) {
-            this._audioSource.playOneShot(clip, 1.0); 
+        const overlay = this.gameManager.globalOverlay;
+        const targetLayout = target.getComponent(Layout);
+        
+        if (this.gameManager) this.gameManager.addValidMove(this.node); 
+        
+        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
+        
+        // Ghosting
+        nodesToMove.forEach(cardNode => {
+            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+            op.opacity = 0;
+        });
+
+        // Math calc
+        nodesToMove.forEach(cardNode => cardNode.setParent(target.node));
+        target.updatePlaceholderVisibility(); 
+        if (targetLayout) targetLayout.updateLayout(); 
+
+        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
+
+        // Overlay Handoff
+        nodesToMove.forEach((cardNode, index) => {
+            cardNode.setParent(overlay);
+            cardNode.setWorldPosition(startWorldPositions[index]);
+            cardNode.setWorldScale(startWorldScales[index]);
+            const op = cardNode.getComponent(UIOpacity)!;
+            op.opacity = 255; 
+        });
+
+        // Animation
+        nodesToMove.forEach((cardNode, index) => {
+            tween(cardNode)
+                .to(0.4 + (index * 0.05), { worldPosition: finalWorldPositions[index] }, { 
+                    easing: 'sineOut',
+                    onComplete: () => {
+                        cardNode.setParent(target.node);
+                        cardNode.setPosition(finalLocalPositions[index]);
+                        cardNode.setWorldScale(startWorldScales[index]); 
+
+                        if (index === nodesToMove.length - 1) {
+                            this.playSuccessEffect(cardNode); 
+                            this.checkAndFlipRevealedCard(); 
+                            if (targetLayout) targetLayout.updateLayout();
+                        }
+                    }
+                })
+                .start();
+        });
+
+        this.updatePlaceholderVisibility();
+    }
+
+    private checkAndFlipRevealedCard() {
+        // STRICT FILTER: Ignore placeholder AND feedback nodes
+        const validCards = this.node.children.filter(c => 
+            c !== this.placeholderNode && 
+            (c.name.includes("faceDown") || c.name.startsWith("card")) // <--- KEY FIX
+        );
+
+        if (validCards.length > 0) {
+            const lastCard = validCards[validCards.length - 1];
+            if (lastCard.name.includes("faceDown")) {
+                const flipper = lastCard.getComponent(CardFlipper);
+                if (flipper) flipper.flipToFaceUp();
+            }
         }
     }
 
+    private playSFX(clip: AudioClip) {
+        if (clip && this._audioSource) this._audioSource.playOneShot(clip, 1.0); 
+    }
+
     private playSuccessEffect(targetNode: Node) {
-        // --- TRIGGER SUCCESS SOUND HERE ---
         this.playSFX(this.successSound);
 
         const effectContainer = new Node('EffectContainer');
-        this.node.parent?.addChild(effectContainer);
+        this.node.parent?.addChild(effectContainer); // Add to parent (board), NOT holder
         effectContainer.setWorldPosition(targetNode.getWorldPosition());
 
         const ring = new Node('Ring');
@@ -227,20 +285,14 @@ executeStackMove(nodesToMove: Node[], target: CardLogic) {
             .start();
     }
 
-    private checkAndFlipRevealedCard() {
-        const remaining = this.node.children.filter(c => c !== this.placeholderNode);
-        if (remaining.length > 0) {
-            const lastCard = remaining[remaining.length - 1];
-            if (lastCard.name.includes("faceDown")) {
-                const flipper = lastCard.getComponent(CardFlipper);
-                if (flipper) flipper.flipToFaceUp();
-            }
-        }
-    }
-
     public updatePlaceholderVisibility() {
         if (!this.placeholderNode) return;
-        const hasCards = this.node.children.some(c => c !== this.placeholderNode && c.active);
+        // Strict filter here too just in case
+        const hasCards = this.node.children.some(c => 
+            c !== this.placeholderNode && 
+            c.active && 
+            (c.name.startsWith("card") || c.name.includes("faceDown"))
+        );
         this.placeholderNode.active = !hasCards;
         const layout = this.getComponent(Layout);
         if (layout) layout.updateLayout();
