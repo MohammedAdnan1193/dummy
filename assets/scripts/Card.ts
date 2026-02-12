@@ -40,19 +40,23 @@ export class CardLogic extends Component {
     private _audioSource: AudioSource = null!;
 
     onLoad() {
-        // console.log(`[CardLogic] Initializing holder: ${this.node.name}`);
+        console.log(`[CardLogic] Initializing holder: ${this.node.name}`);
         this._audioSource = this.getComponent(AudioSource) || this.addComponent(AudioSource);
         this.node.on(Node.EventType.TOUCH_START, this.onHolderClicked, this);
         this.updatePlaceholderVisibility();
     }
 
+    /**
+     * EXTRACTS DATA FROM CARD NAME (e.g., "card045")
+     * Returns null if the node is not a valid game card.
+     */
     getCardData(cardNode: Node): CardData | null {
         // 1. ROBUSTNESS CHECK: Immediately reject effects/feedback nodes
         if (!cardNode.active || 
             cardNode.name === "default" || 
             cardNode.name.includes("faceDown") ||
-            cardNode.name === "WrongClickFeedback" || // Explicit rejection
-            !cardNode.name.startsWith("card")) {      // Catch-all rejection
+            cardNode.name === "WrongClickFeedback" || 
+            !cardNode.name.startsWith("card")) {      
             return null;
         }
         
@@ -60,7 +64,7 @@ export class CardLogic extends Component {
         const index = parseInt(indexStr);
         
         if (isNaN(index)) {
-            // console.warn(`[CardLogic] Failed to parse index from card name: ${cardNode.name}`);
+            console.warn(`[CardLogic] Failed to parse index from card name: ${cardNode.name}`);
             return null;
         }
 
@@ -73,9 +77,9 @@ export class CardLogic extends Component {
     }
 
     onHolderClicked(event: EventTouch) {
-        // console.log(`\n[CardLogic] Click detected on ${this.node.name}`);
+        // console.log(`[CardLogic] Click detected on ${this.node.name}`);
 
-        // 1. SAFETY CHECK: Animation Busy
+        // 1. SAFETY CHECK: Ignore clicks if any card is currently flipping
         const activeFlippers = this.node.getComponentsInChildren(CardFlipper);
         const isBusy = activeFlippers.some(flipper => flipper.isFlipping);
         if (isBusy) {
@@ -83,26 +87,35 @@ export class CardLogic extends Component {
             return; 
         }
 
-        // 2. STRICT FILTER: Only get nodes that are explicitly named "card..."
-        // This ignores "WrongClickFeedback", "EffectContainer", etc.
+        // 2. GET VALID CARDS: Filter out placeholders and effect nodes
         const faceUpCards = this.node.children.filter(c => 
             c !== this.placeholderNode && 
             c.active &&
-            c.name.startsWith("card") // <--- KEY FIX: Must start with "card"
+            c.name.startsWith("card") 
         );
 
         if (faceUpCards.length > 0) {
+            // A. Check if the whole stack can move
             const baseCardNode = faceUpCards[0]; 
             const stackData = this.getCardData(baseCardNode);
-            if (stackData && this.findValidMove(stackData, faceUpCards)) return; 
+            
+            if (stackData && this.findValidMove(stackData, faceUpCards)) {
+                return; // Move started successfully
+            } 
 
+            // B. Check if just the top card can move (split stack)
             if (faceUpCards.length > 1) {
                 const lastCardNode = faceUpCards[faceUpCards.length - 1];
                 const lastCardData = this.getCardData(lastCardNode);
-                if (lastCardData && this.findValidMove(lastCardData, [lastCardNode])) return; 
+                
+                if (lastCardData && this.findValidMove(lastCardData, [lastCardNode])) {
+                    return; // Move started successfully
+                } 
             }
         }
 
+        // 3. ERROR FEEDBACK
+        console.log(`[CardLogic] ❌ Invalid Move on ${this.node.name}`);
         this.playSFX(this.errorSound);
         this.showWrongFeedback(event);
     }
@@ -113,7 +126,7 @@ export class CardLogic extends Component {
         for (const target of allHolders) {
             if (target === this) continue;
             
-            // STRICT FILTER here too: Ignore effects in other columns
+            // STRICT FILTER: Only look at real cards in the target column
             const targetChildren = target.node.children.filter(c => 
                 c !== target.placeholderNode && 
                 (c.name.startsWith("card") || c.name.includes("faceDown"))
@@ -121,23 +134,122 @@ export class CardLogic extends Component {
 
             const isTargetEmpty = targetChildren.length === 0;
 
+            // RULE 1: King on Empty Column
             if (isTargetEmpty && movingData.value === 12) {
+                console.log(`[CardLogic] ✅ Moving King to Empty: ${target.node.name}`);
                 this.executeStackMove(sequence, target);
                 return true;
             }
 
+            // RULE 2: Standard Stacking (Opposite Color, Value - 1)
             if (!isTargetEmpty) {
                 const bottomTarget = targetChildren[targetChildren.length - 1];
-                // getCardData now returns null for "WrongClickFeedback", so this is safe
                 const targetData = this.getCardData(bottomTarget); 
                 
                 if (targetData && targetData.isRed !== movingData.isRed && targetData.value === movingData.value + 1) {
+                    console.log(`[CardLogic] ✅ Valid Stack: ${movingData.node.name} -> ${bottomTarget.name} (${target.node.name})`);
                     this.executeStackMove(sequence, target);
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    executeStackMove(nodesToMove: Node[], target: CardLogic) {
+        if (!this.gameManager || !this.gameManager.globalOverlay) {
+            console.error("[CardLogic] ERROR: GameManager/Overlay missing");
+            return;
+        }
+
+        const overlay = this.gameManager.globalOverlay;
+        const overlayTransform = overlay.getComponent(UITransform);
+        const targetLayout = target.getComponent(Layout);
+        
+        // Notify Game Manager (for Undo/History)
+        if (this.gameManager) this.gameManager.addValidMove(this.node); 
+        
+        console.log(`[CardLogic] >>> EXECUTE MOVE: ${nodesToMove.length} cards to ${target.node.name}`);
+
+        // 1. SNAPSHOT ORIGINAL POSITIONS
+        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
+        
+        // 2. GHOSTING (The Calculation Phase)
+        nodesToMove.forEach(cardNode => {
+            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+            op.opacity = 0; // Hide
+            cardNode.setParent(target.node); // Move to target
+        });
+
+        // 3. FORCE LAYOUT & MATRIX UPDATES (Prevents "Pixel Drift")
+        target.updatePlaceholderVisibility(); 
+        if (targetLayout) targetLayout.updateLayout(); 
+
+        target.node.updateWorldTransform(); // Force parent matrix update
+        nodesToMove.forEach(node => node.updateWorldTransform()); // Force children matrix update
+
+        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
+
+        // 4. OVERLAY HANDOFF
+        nodesToMove.forEach((cardNode, index) => {
+            cardNode.setParent(overlay);
+            cardNode.setWorldPosition(startWorldPositions[index]);
+            cardNode.setWorldScale(startWorldScales[index]);
+            cardNode.getComponent(UIOpacity)!.opacity = 255; 
+        });
+
+        // 5. ANIMATION
+        nodesToMove.forEach((cardNode, index) => {
+            
+            // Calculate destination in Overlay's local space for smoother tweening
+            let targetPosInOverlay = new Vec3();
+            if (overlayTransform) {
+                targetPosInOverlay = overlayTransform.convertToNodeSpaceAR(finalWorldPositions[index]);
+            } else {
+                targetPosInOverlay = finalWorldPositions[index]; 
+            }
+
+            tween(cardNode)
+                .to(0.35 + (index * 0.04), { position: targetPosInOverlay }, { 
+                    easing: 'sineOut', 
+                    onComplete: () => {
+                        // Final Hand-off to Target Holder
+                        cardNode.setParent(target.node);
+                        cardNode.setPosition(finalLocalPositions[index]);
+                        cardNode.setWorldScale(startWorldScales[index]); 
+
+                        // Completion Logic (Run only on the last card)
+                        if (index === nodesToMove.length - 1) {
+                            console.log(`[CardLogic] <<< MOVE COMPLETE`);
+                            this.playSuccessEffect(cardNode); 
+                            this.checkAndFlipRevealedCard(); 
+                            if (targetLayout) targetLayout.updateLayout();
+                        }
+                    }
+                })
+                .start();
+        });
+
+        this.updatePlaceholderVisibility();
+    }
+
+    private checkAndFlipRevealedCard() {
+        // STRICT FILTER: Ignore placeholder AND feedback nodes
+        const validCards = this.node.children.filter(c => 
+            c !== this.placeholderNode && 
+            (c.name.includes("faceDown") || c.name.startsWith("card"))
+        );
+
+        if (validCards.length > 0) {
+            const lastCard = validCards[validCards.length - 1];
+            if (lastCard.name.includes("faceDown")) {
+                console.log(`[CardLogic] 🔀 Auto-flipping revealed card: ${lastCard.name}`);
+                const flipper = lastCard.getComponent(CardFlipper);
+                if (flipper) flipper.flipToFaceUp();
+            }
+        }
     }
 
     private showWrongFeedback(event: EventTouch) {
@@ -165,82 +277,6 @@ export class CardLogic extends Component {
             .start();
     }
 
-    executeStackMove(nodesToMove: Node[], target: CardLogic) {
-        if (!this.gameManager || !this.gameManager.globalOverlay) {
-            console.error("[CardLogic] ERROR: GameManager/Overlay missing");
-            return;
-        }
-
-        const overlay = this.gameManager.globalOverlay;
-        const targetLayout = target.getComponent(Layout);
-        
-        if (this.gameManager) this.gameManager.addValidMove(this.node); 
-        
-        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
-        
-        // Ghosting
-        nodesToMove.forEach(cardNode => {
-            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
-            op.opacity = 0;
-        });
-
-        // Math calc
-        nodesToMove.forEach(cardNode => cardNode.setParent(target.node));
-        target.updatePlaceholderVisibility(); 
-        if (targetLayout) targetLayout.updateLayout(); 
-
-        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
-
-        // Overlay Handoff
-        nodesToMove.forEach((cardNode, index) => {
-            cardNode.setParent(overlay);
-            cardNode.setWorldPosition(startWorldPositions[index]);
-            cardNode.setWorldScale(startWorldScales[index]);
-            const op = cardNode.getComponent(UIOpacity)!;
-            op.opacity = 255; 
-        });
-
-        // Animation
-        nodesToMove.forEach((cardNode, index) => {
-            tween(cardNode)
-                .to(0.4 + (index * 0.05), { worldPosition: finalWorldPositions[index] }, { 
-                    easing: 'sineOut',
-                    onComplete: () => {
-                        cardNode.setParent(target.node);
-                        cardNode.setPosition(finalLocalPositions[index]);
-                        cardNode.setWorldScale(startWorldScales[index]); 
-
-                        if (index === nodesToMove.length - 1) {
-                            this.playSuccessEffect(cardNode); 
-                            this.checkAndFlipRevealedCard(); 
-                            if (targetLayout) targetLayout.updateLayout();
-                        }
-                    }
-                })
-                .start();
-        });
-
-        this.updatePlaceholderVisibility();
-    }
-
-    private checkAndFlipRevealedCard() {
-        // STRICT FILTER: Ignore placeholder AND feedback nodes
-        const validCards = this.node.children.filter(c => 
-            c !== this.placeholderNode && 
-            (c.name.includes("faceDown") || c.name.startsWith("card")) // <--- KEY FIX
-        );
-
-        if (validCards.length > 0) {
-            const lastCard = validCards[validCards.length - 1];
-            if (lastCard.name.includes("faceDown")) {
-                const flipper = lastCard.getComponent(CardFlipper);
-                if (flipper) flipper.flipToFaceUp();
-            }
-        }
-    }
-
     private playSFX(clip: AudioClip) {
         if (clip && this._audioSource) this._audioSource.playOneShot(clip, 1.0); 
     }
@@ -249,7 +285,7 @@ export class CardLogic extends Component {
         this.playSFX(this.successSound);
 
         const effectContainer = new Node('EffectContainer');
-        this.node.parent?.addChild(effectContainer); // Add to parent (board), NOT holder
+        this.node.parent?.addChild(effectContainer); 
         effectContainer.setWorldPosition(targetNode.getWorldPosition());
 
         const ring = new Node('Ring');
@@ -259,6 +295,7 @@ export class CardLogic extends Component {
         ring.addComponent(UITransform).setContentSize(150, 150);
         effectContainer.addChild(ring);
 
+        // Spawn Stars
         for (let i = 0; i < 15; i++) {
             const star = new Node('Star');
             const starSprite = star.addComponent(Sprite);
@@ -287,7 +324,6 @@ export class CardLogic extends Component {
 
     public updatePlaceholderVisibility() {
         if (!this.placeholderNode) return;
-        // Strict filter here too just in case
         const hasCards = this.node.children.some(c => 
             c !== this.placeholderNode && 
             c.active && 

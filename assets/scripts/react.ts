@@ -5,7 +5,7 @@ const { ccclass, property } = _decorator;
 export class CTARedirect extends Component {
 
     @property
-    public targetUrl: string = "https://www.google.com"; // Set your dummy website here
+    public targetUrl: string = "https://play.google.com/store/apps/details?id=nova.solitaire.patience.card.games.klondike.free"; // Set your dummy website here
 
     onLoad() {
         // Attach the click event to this node
