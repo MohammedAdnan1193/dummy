@@ -253,26 +253,54 @@ export class CardLogic extends Component {
     }
 
     private showWrongFeedback(event: EventTouch) {
+        // --- 1. DETERMINE PARENT (Fixing the layout issue) ---
+        // This ensures the cross appears exactly where you click, ignoring the card stack layout.
+        let targetParent = this.node;
+        if (this.gameManager && this.gameManager.globalOverlay) {
+            targetParent = this.gameManager.globalOverlay;
+        } else if (this.node.parent) {
+            targetParent = this.node.parent;
+        }
+
+        // --- 2. CALCULATE POSITION ---
+        const touchPos = event.getUILocation();
+        const worldPos = new Vec3(touchPos.x, touchPos.y, 0);
+
+        // Convert world coordinate to the Target Parent's local space
+        const parentTrans = targetParent.getComponent(UITransform);
+        const localPos = parentTrans ? parentTrans.convertToNodeSpaceAR(worldPos) : worldPos;
+
+        // --- 3. CREATE THE CROSS ---
         const feedbackNode = new Node('WrongClickFeedback');
+        targetParent.addChild(feedbackNode);
+        feedbackNode.setPosition(localPos);
+
         const sprite = feedbackNode.addComponent(Sprite);
+        sprite.spriteFrame = this.wrongClickSprite;
+
         const uiOpacity = feedbackNode.addComponent(UIOpacity);
         const transform = feedbackNode.addComponent(UITransform);
 
-        sprite.spriteFrame = this.wrongClickSprite;
-        transform.setContentSize(100, 100); 
-        this.node.addChild(feedbackNode);
+        // REDUCED SIZE: 80x80 (was 120x120)
+        transform.setContentSize(80, 80);
 
-        const touchPos = event.getUILocation();
-        const worldPos = new Vec3(touchPos.x, touchPos.y, 0);
-        const localPos = this.node.getComponent(UITransform)!.convertToNodeSpaceAR(worldPos);
-        feedbackNode.setPosition(localPos);
+        // Initial State
+        feedbackNode.setScale(new Vec3(0, 0, 1)); // Start invisible
 
-        tween(uiOpacity)
-            .to(0.1, { opacity: 255 })
-            .delay(0.4)
-            .to(0.5, { opacity: 0 })
-            .call(() => { 
-                if (isValid(feedbackNode)) feedbackNode.destroy(); 
+        // --- 4. SIMPLE POP ANIMATION ---
+        // Scale 0 -> 1.2 (Overshoot) -> 1.0 (Settle) -> Wait -> Fade Out
+        tween(feedbackNode)
+            .to(0.1, { scale: new Vec3(1.2, 1.2, 1) }, { easing: 'backOut' })
+            .to(0.1, { scale: new Vec3(1.0, 1.0, 1) }, { easing: 'sineOut' })
+            .delay(0.3) // Stay visible briefly
+            .call(() => {
+                // Start Fading Out
+                tween(uiOpacity)
+                    .to(0.2, { opacity: 0 })
+                    .call(() => {
+                        if (isValid(feedbackNode)) feedbackNode.destroy();
+                    })
+                    .start();
             })
             .start();
     }
