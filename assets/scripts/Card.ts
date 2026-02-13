@@ -284,40 +284,86 @@ export class CardLogic extends Component {
     private playSuccessEffect(targetNode: Node) {
         this.playSFX(this.successSound);
 
+        // 1. Create Main Container at the target position
         const effectContainer = new Node('EffectContainer');
         this.node.parent?.addChild(effectContainer); 
         effectContainer.setWorldPosition(targetNode.getWorldPosition());
 
+        // --- EFFECT 1: GROWING RING ---
         const ring = new Node('Ring');
         const ringSprite = ring.addComponent(Sprite);
         ringSprite.spriteFrame = this.ringSprite;
-        ring.addComponent(UIOpacity).opacity = 255;
-        ring.addComponent(UITransform).setContentSize(150, 150);
+        const ringOpacity = ring.addComponent(UIOpacity);
+        ringOpacity.opacity = 255;
+        ring.addComponent(UITransform).setContentSize(200, 200); // Base size
         effectContainer.addChild(ring);
 
-        // Spawn Stars
-        for (let i = 0; i < 15; i++) {
-            const star = new Node('Star');
-            const starSprite = star.addComponent(Sprite);
-            starSprite.spriteFrame = this.starSprite;
-            star.addComponent(UIOpacity).opacity = 255;
-            star.addComponent(UITransform).setContentSize(40, 40);
-            
-            const angle = Math.random() * Math.PI * 2;
-            const radius = Math.random() * 50;
-            star.setPosition(new Vec3(Math.cos(angle) * radius, Math.sin(angle) * radius, 0));
-            effectContainer.addChild(star);
-        }
+        // Reset Ring Scale
+        ring.setScale(0, 0, 1);
 
-        effectContainer.setScale(new Vec3(0.5, 0.5, 1));
-        
-        tween(effectContainer)
-            .to(0.3, { scale: new Vec3(2.5, 2.5, 1) }, { easing: 'sineOut' })
+        // Animate Ring: Grow fast, then fade out
+        const ringDuration = 0.4;
+        tween(ring)
+            .to(ringDuration, { scale: new Vec3(2.0, 2.0, 1) }, { easing: 'backOut' })
             .start();
 
-        const opacityComp = effectContainer.addComponent(UIOpacity);
-        tween(opacityComp)
-            .to(0.5, { opacity: 0 }, { easing: 'sineIn' })
+        tween(ringOpacity)
+            .delay(ringDuration * 0.3)
+            .to(ringDuration * 0.7, { opacity: 0 })
+            .start();
+
+        // --- EFFECT 2: SPRAYING PARTICLES (STARS) ---
+        const particleCount = 30; // From your settings
+        
+        for (let i = 0; i < particleCount; i++) {
+            const particle = new Node('Particle');
+            const pSprite = particle.addComponent(Sprite);
+            pSprite.spriteFrame = this.starSprite; // Using starSprite as the particle
+            const pOpacity = particle.addComponent(UIOpacity);
+            pOpacity.opacity = 255;
+            particle.addComponent(UITransform).setContentSize(100, 100);
+            effectContainer.addChild(particle);
+
+            // --- Randomize Physics (Based on CardLandEffect logic) ---
+            const angle = Math.random() * 360;
+            const radian = angle * Math.PI / 180;
+            
+            // Speed: Base 300 +/- 150 var
+            const speed = 300 + (Math.random() - 0.5) * 150; 
+            
+            // Lifetime: Base 0.6 +/- 0.3 var
+            const lifetime = 0.6 + (Math.random() - 0.5) * 0.3; 
+
+            // Initial Scale: 0.3 to 0.7
+            const startScale = 0.3 + Math.random() * 0.4;
+            particle.setScale(startScale, startScale, 1);
+
+            // Calculate End Position
+            const distance = speed * lifetime;
+            const endX = Math.cos(radian) * distance;
+            const endY = Math.sin(radian) * distance;
+
+            // 1. Movement Tween
+            tween(particle)
+                .to(lifetime, { position: new Vec3(endX, endY, 0) }, { easing: 'sineOut' })
+                .start();
+
+            // 2. Opacity Tween (Fade out at end)
+            tween(pOpacity)
+                .to(lifetime * 0.7, { opacity: 255 })
+                .to(lifetime * 0.3, { opacity: 0 })
+                .start();
+
+            // 3. Scale Tween (Shrink to tiny)
+            tween(particle)
+                .to(lifetime, { scale: new Vec3(0.05, 0.05, 1) }, { easing: 'sineIn' })
+                .start();
+        }
+
+        // --- CLEANUP ---
+        // Destroy the whole container after the longest animation finishes (approx 1 sec)
+        tween(effectContainer.addComponent(UIOpacity))
+            .delay(1.0)
             .call(() => { if (isValid(effectContainer)) effectContainer.destroy(); })
             .start();
     }
