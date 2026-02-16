@@ -1,9 +1,12 @@
-import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip } from 'cc';
+// ❌ Circular dependency fixed: No CardLogic import needed here
+
 const { ccclass, property } = _decorator;
 
 /**
  * GameManager handles the high-level game state, 
- * including the intro sequence, tutorial progression, and CTA triggers.
+ * including the intro sequence, tutorial progression, CTA triggers,
+ * and looping background music.
  */
 @ccclass('GameManager')
 export class GameManager extends Component {
@@ -35,12 +38,54 @@ export class GameManager extends Component {
     @property(Node)
     public globalOverlay: Node = null!;
 
+    @property({ type: AudioClip, tooltip: "Background music track" })
+    public bgmClip: AudioClip = null!;
+
+    // --- CENTRALIZED HOLDER REFERENCES (Using Node to avoid Circular Dependency) ---
+    @property({ type: [Node], tooltip: "Drag your 7 Tableau holder nodes here" })
+    public tableauNodes: Node[] = [];
+
+    @property({ type: [Node], tooltip: "Drag your 4 Foundation holder nodes here" })
+    public foundationNodes: Node[] = [];
+
+    @property({ type: Node, tooltip: "The face-down draw deck" })
+    public stockNode: Node = null!;
+
+    @property({ type: Node, tooltip: "The face-up playable discarded cards" })
+    public wasteNode: Node = null!;
+    // -----------------------------------------------------------------------------
+
     private _currentStep: number = 0;
+    private _audioSource: AudioSource = null!;
+    private _gameWon: boolean = false;
 
     onLoad() {
         console.log("[GameManager] Initializing game state...");
+        
+        this.initBGM();
         this.setupInitialState();
         this.startSequence();
+    }
+
+    private initBGM() {
+        if (!this.bgmClip) {
+            console.warn("[GameManager] No BGM Clip assigned in the inspector.");
+            return;
+        }
+
+        this._audioSource = this.node.getComponent(AudioSource) || this.node.addComponent(AudioSource);
+        this._audioSource.clip = this.bgmClip;
+        this._audioSource.loop = true;
+        this._audioSource.playOnAwake = true;
+        this._audioSource.volume = 0.5; 
+        this._audioSource.play();
+    }
+
+    private ensureAudioPlays() {
+        if (this._audioSource && !this._audioSource.playing) {
+            this._audioSource.play();
+            console.log("[GameManager] Audio playback resumed via user interaction.");
+        }
     }
 
     private setupInitialState() {
@@ -89,15 +134,19 @@ export class GameManager extends Component {
             tween(mainOp).to(0.3, { opacity: 255 }).start();
         }
 
-        // Show the very first guide step
         this.toggleGuide(0, true, true); 
     }
 
     /**
      * Triggered by CardLogic when a valid move occurs.
-     * Manages tutorial progression logic.
      */
     public addValidMove(clickedNode: Node) {
+        this.ensureAudioPlays();
+
+        // 1. Check for Win Condition (All cards in foundations)
+        this.checkWinCondition();
+
+        // 2. Handle Tutorial Progression
         const expectedNode = this.progressionNodes[this._currentStep];
 
         if (clickedNode === expectedNode) {
@@ -110,7 +159,6 @@ export class GameManager extends Component {
                 console.log("[GameManager] Tutorial complete. Triggering CTA.");
                 this.showCTA();
             } else {
-                console.log(`[GameManager] Advancing to tutorial step: ${this._currentStep}`);
                 this.unschedule(this.showDelayedGuide);
                 const nextIndex = this._currentStep;
                 this.scheduleOnce(() => this.showDelayedGuide(nextIndex), 1.2);
@@ -118,10 +166,32 @@ export class GameManager extends Component {
         } else {
             console.log(`[GameManager] ℹ️ FREESTYLE MOVE: Valid move on ${clickedNode.name}, but tutorial expects ${expectedNode?.name}.`);
             
-            // Reset current guide to remind player where the tutorial is
             this.toggleGuide(this._currentStep, false);
             this.unschedule(this.showDelayedGuide);
             this.scheduleOnce(() => this.showDelayedGuide(this._currentStep), 0.5);
+        }
+    }
+
+    /**
+     * Checks if all 4 foundations are full (13 cards each = 52 total).
+     */
+    private checkWinCondition() {
+        if (this._gameWon) return;
+
+        let totalCardsInFoundation = 0;
+        
+        for (const foundation of this.foundationNodes) {
+            // Count cards that aren't placeholders or effects
+            const count = foundation.children.filter(c => c.name.startsWith("card")).length;
+            totalCardsInFoundation += count;
+        }
+
+        // 52 cards means the game is beaten
+        if (totalCardsInFoundation >= 52) {
+            console.log("[GameManager] 🏆 WIN CONDITION MET! All 52 cards collected.");
+            this._gameWon = true;
+            this.hideAllGuides(); // Clear tutorial if still active
+            this.scheduleOnce(() => this.showCTA(), 0.5); // Show end screen
         }
     }
 
