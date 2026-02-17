@@ -54,13 +54,14 @@ export class CardLogic extends Component {
     private _audioSource: AudioSource = null!;
 
     onLoad() {
-        console.log(`[CardLogic] Initializing holder: ${this.node.name} as ${HolderType[this.holderType]}`);
+        console.log(`[CardLogic] 🟢 INITIALIZING ${this.node.name} (Type: ${HolderType[this.holderType]})`);
         this._audioSource = this.getComponent(AudioSource) || this.addComponent(AudioSource);
         this.node.on(Node.EventType.TOUCH_START, this.onHolderClicked, this);
         this.updatePlaceholderVisibility();
     }
 
     getCardData(cardNode: Node): CardData | null {
+        // Log rejected nodes for debugging
         if (!cardNode.active || 
             cardNode.name === "default" || 
             cardNode.name.includes("faceDown") ||
@@ -76,19 +77,25 @@ export class CardLogic extends Component {
         const index = parseInt(indexStr);
         
         if (isNaN(index)) {
-            console.warn(`[CardLogic] Failed to parse index from card name: ${cardNode.name}`);
+            console.warn(`[CardLogic] ⚠️ Failed to parse index from card name: ${cardNode.name}`);
             return null;
         }
 
-        return {
+        const data = {
             value: index % 13,
             suit: Math.floor(index / 13),
             isRed: (Math.floor(index / 13) === 1 || Math.floor(index / 13) === 2),
             node: cardNode
         };
+
+        // Verbose data log (Optional: Comment out if too noisy)
+        // console.log(`[CardLogic] 📄 Parsed Data for ${cardNode.name}: Value=${data.value}, Red=${data.isRed}`);
+        return data;
     }
 
     onHolderClicked(event: EventTouch) {
+        if (this.gameManager) this.gameManager.resetIdleTimer();
+        
         if (this.holderType === HolderType.FOUNDATION) {
             console.log(`[CardLogic] ❌ Clicks on Foundation are disabled.`);
             this.playSFX(this.errorSound);
@@ -102,8 +109,7 @@ export class CardLogic extends Component {
         }
 
         const activeFlippers = this.node.getComponentsInChildren(CardFlipper);
-        const isBusy = activeFlippers.some(flipper => flipper.isFlipping);
-        if (isBusy) {
+        if (activeFlippers.some(flipper => flipper.isFlipping)) {
             console.warn(`[CardLogic] 🛑 INPUT BLOCKED: Animation in progress.`);
             return; 
         }
@@ -116,35 +122,46 @@ export class CardLogic extends Component {
             c.name.startsWith("card") 
         );
 
-        if (faceUpCards.length > 0) {
-            const lastCardNode = faceUpCards[faceUpCards.length - 1];
-            const lastCardData = this.getCardData(lastCardNode);
+        console.log(`[CardLogic] 🃏 Found ${faceUpCards.length} face-up playable cards in this stack.`);
 
-            if (lastCardData && this.findFoundationMove(lastCardData, [lastCardNode])) {
+        if (faceUpCards.length > 0) {
+            // --- 1. PRIORITY: CHECK FOUNDATION (Always Top Card Only) ---
+            const topCard = faceUpCards[faceUpCards.length - 1];
+            const topData = this.getCardData(topCard);
+
+            console.log(`[CardLogic] 🔍 Checking Foundation move for Top Card: ${topCard.name}`);
+            if (topData && this.findFoundationMove(topData, [topCard])) {
                 return; 
             }
 
+            // --- 2. CHECK TABLEAU MOVES (Iterate from Bottom Up) ---
             if (this.holderType === HolderType.WASTE) {
-                if (lastCardData && this.findValidMove(lastCardData, [lastCardNode])) {
+                // Waste Pile Restriction: Can ONLY move the single top card
+                console.log(`[CardLogic] 🔍 Checking Tableau moves for Waste Card: ${topCard.name}`);
+                if (topData && this.findValidMove(topData, [topCard])) {
                     return; 
                 }
             } else {
-                const baseCardNode = faceUpCards[0]; 
-                const stackData = this.getCardData(baseCardNode);
-                
-                if (stackData && this.findValidMove(stackData, faceUpCards)) {
-                    return; 
-                } 
+                // Tableau Logic: Try to move the whole stack, then sub-stacks
+                // We loop from 0 (Bottom) to length-1 (Top)
+                // This ensures we prioritize moving the LARGEST possible stack first.
+                for (let i = 0; i < faceUpCards.length; i++) {
+                    const headCard = faceUpCards[i];
+                    const headData = this.getCardData(headCard);
 
-                if (faceUpCards.length > 1 && lastCardData) {
-                    if (this.findValidMove(lastCardData, [lastCardNode])) {
-                        return; 
+                    // The "Train" is the head card + everything sitting on top of it
+                    const subStack = faceUpCards.slice(i); 
+
+                    console.log(`[CardLogic] 🔍 Checking Split at index ${i}: Head=${headCard.name} (Moving ${subStack.length} cards)`);
+                    
+                    if (headData && this.findValidMove(headData, subStack)) {
+                        return; // Found a valid move! Stop checking.
                     }
                 }
             }
         }
 
-        console.log(`[CardLogic] ❌ Invalid Move on ${this.node.name}`);
+        console.log(`[CardLogic] ❌ No valid moves found for click on ${this.node.name}`);
         this.playSFX(this.errorSound);
         this.showWrongFeedback(event);
     }
@@ -155,8 +172,8 @@ export class CardLogic extends Component {
             return;
         }
 
-        // 1. DEAD STATE CHECK
         if (this.emptyStockVisual && this.emptyStockVisual.active) {
+            console.log("[CardLogic] ⛔ Stock is permanently empty (No Reset). Click ignored.");
             return;
         }
 
@@ -173,10 +190,9 @@ export class CardLogic extends Component {
         if (stockCards.length > 0) {
             // --- DRAW PHASE ---
             const topCard = stockCards[stockCards.length - 1];
-            console.log(`[CardLogic] 🎴 Drawing card to Waste: ${topCard.name}`);
+            console.log(`[CardLogic] 🎴 ACTION: Draw ${topCard.name} -> Waste`);
             
             this.playSFX(this.successSound);
-
             topCard.setSiblingIndex(this.node.children.length - 1); 
 
             if (wasteLogic) {
@@ -191,35 +207,27 @@ export class CardLogic extends Component {
 
         } else {
             // --- RECYCLE PHASE ---
-            console.log(`[CardLogic] ♻️ Stock empty. Checking Waste...`);
+            console.log(`[CardLogic] ♻️ Stock empty. Attempting Recycle...`);
             
             const wasteCards = wasteNode.children.filter(c => 
                 c.name.startsWith("card") && c !== wasteLogic?.placeholderNode
             );
 
-            // 2. CHECK IF WASTE IS ALSO EMPTY (GAME OVER FOR DECK)
             if (wasteCards.length === 0) {
-                console.log(`[CardLogic] 🛑 Waste is also empty. Deck is exhausted.`);
-                
-                if (this.emptyStockVisual) {
-                    this.emptyStockVisual.active = true;
-                }
-                
+                console.log(`[CardLogic] 🛑 Waste is also empty. Deck depleted.`);
+                if (this.emptyStockVisual) this.emptyStockVisual.active = true;
                 if (this.placeholderNode) this.placeholderNode.active = false;
                 if (this.visualDeckTop) this.visualDeckTop.active = false;
-
                 this.playSFX(this.errorSound);
                 return;
             }
 
             this.playSFX(this.successSound); 
-
             const reversedWaste = wasteCards.reverse();
 
             reversedWaste.forEach(card => {
                 card.setParent(this.node);
                 card.setPosition(0, 0, 0); 
-                
                 const flipper = card.getComponent(CardFlipper);
                 if (flipper) flipper.setFaceDown();
             });
@@ -252,7 +260,7 @@ export class CardLogic extends Component {
             const isTargetEmpty = targetCards.length === 0;
 
             if (isTargetEmpty && movingData.value === 0) {
-                console.log(`[CardLogic] 🌟 Moving Ace to Empty Foundation: ${targetLogic.node.name}`);
+                console.log(`[CardLogic] 🌟 SUCCESS: Ace (${movingData.node.name}) -> Empty Foundation (${targetLogic.node.name})`);
                 this.executeStackMove(sequence, targetLogic);
                 return true;
             }
@@ -262,7 +270,7 @@ export class CardLogic extends Component {
                 const targetData = this.getCardData(topTargetCard);
                 
                 if (targetData && targetData.suit === movingData.suit && movingData.value === targetData.value + 1) {
-                    console.log(`[CardLogic] 🌟 Valid Foundation Stack: ${movingData.node.name} -> ${topTargetCard.name}`);
+                    console.log(`[CardLogic] 🌟 SUCCESS: ${movingData.node.name} -> Foundation (${topTargetCard.name})`);
                     this.executeStackMove(sequence, targetLogic);
                     return true;
                 }
@@ -274,11 +282,14 @@ export class CardLogic extends Component {
     findValidMove(movingData: CardData, sequence: Node[]): boolean {
         if (!this.gameManager || !this.gameManager.tableauNodes) return false;
         
+        console.log(`[CardLogic] 🔎 SEARCHING TABLEAU MOVES for: ${movingData.node.name} (Value: ${movingData.value}, Red: ${movingData.isRed})`);
+
         const allHolderNodes = this.gameManager.tableauNodes;
         
         for (const targetNode of allHolderNodes) {
             const target = targetNode.getComponent(CardLogic);
             
+            // Skip invalid targets
             if (!target || target === this || target.holderType !== HolderType.TABLEAU) continue; 
             
             const targetChildren = target.node.children.filter(c => 
@@ -288,20 +299,41 @@ export class CardLogic extends Component {
 
             const isTargetEmpty = targetChildren.length === 0;
 
-            if (isTargetEmpty && movingData.value === 12) {
-                console.log(`[CardLogic] ✅ Moving King to Empty: ${target.node.name}`);
-                this.executeStackMove(sequence, target);
-                return true;
+            // RULE 1: KING TO EMPTY
+            if (isTargetEmpty) {
+                console.log(`[CardLogic]    > Checking Empty Column: ${target.node.name}`);
+                if (movingData.value === 12) { // 12 is King
+                    console.log(`[CardLogic]      ✅ KING RULE PASS: Moving King to empty column.`);
+                    this.executeStackMove(sequence, target);
+                    return true;
+                } else {
+                    console.log(`[CardLogic]      ❌ KING RULE FAIL: Card is not a King (Value: ${movingData.value}).`);
+                }
             }
 
+            // RULE 2: STANDARD STACKING
             if (!isTargetEmpty) {
                 const bottomTarget = targetChildren[targetChildren.length - 1];
                 const targetData = this.getCardData(bottomTarget); 
                 
-                if (targetData && targetData.isRed !== movingData.isRed && targetData.value === movingData.value + 1) {
-                    console.log(`[CardLogic] ✅ Valid Stack: ${movingData.node.name} -> ${bottomTarget.name} (${target.node.name})`);
-                    this.executeStackMove(sequence, target);
-                    return true;
+                // Logging specifically for RULE 2 as requested
+                if (targetData) {
+                    console.log(`[CardLogic] [RULE 2 CHECK] vs Target: ${bottomTarget.name} in ${target.node.name}`);
+                    console.log(`[CardLogic]      > Moving Card: Val=${movingData.value}, Red=${movingData.isRed}`);
+                    console.log(`[CardLogic]      > Target Card: Val=${targetData.value}, Red=${targetData.isRed}`);
+                    
+                    const colorMatch = targetData.isRed !== movingData.isRed;
+                    const valueMatch = targetData.value === movingData.value + 1;
+
+                    if (colorMatch && valueMatch) {
+                        console.log(`[CardLogic]      ✅ MATCH! Opposite Color & Value - 1.`);
+                        console.log(`[CardLogic] ✅ Valid Stack: ${movingData.node.name} -> ${bottomTarget.name} (${target.node.name})`);
+                        this.executeStackMove(sequence, target);
+                        return true;
+                    } else {
+                        const reason = !colorMatch ? "SAME COLOR" : "WRONG VALUE";
+                        console.log(`[CardLogic]      ❌ MISMATCH: ${reason}`);
+                    }
                 }
             }
         }
@@ -320,7 +352,7 @@ export class CardLogic extends Component {
         
         if (this.gameManager) this.gameManager.addValidMove(this.node); 
         
-        console.log(`[CardLogic] >>> EXECUTE MOVE: ${nodesToMove.length} cards to ${target.node.name}`);
+        console.log(`[CardLogic] >>> EXECUTE MOVE: Moving ${nodesToMove.length} cards to ${target.node.name}`);
 
         const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
         const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
@@ -370,7 +402,6 @@ export class CardLogic extends Component {
                             this.checkAndFlipRevealedCard(); 
                             if (targetLayout) targetLayout.updateLayout();
 
-                            // 🌟 CHECK FOR DECK DEPLETION HERE
                             if (this.holderType === HolderType.WASTE) {
                                 this.checkDeckDepletion();
                             }
@@ -381,18 +412,15 @@ export class CardLogic extends Component {
         });
     }
 
-    // --- NEW HELPER: CHECKS IF BOTH PILES ARE EMPTY ---
     private checkDeckDepletion() {
         if (!this.gameManager || !this.gameManager.stockNode) return;
 
-        // 1. Check if Waste is empty
         const wasteCards = this.node.children.filter(c => 
             c.name.startsWith("card") && c !== this.placeholderNode
         );
 
-        if (wasteCards.length > 0) return; // Still cards here
+        if (wasteCards.length > 0) return; 
 
-        // 2. Check if Stock is empty
         const stockNode = this.gameManager.stockNode;
         const stockLogic = stockNode.getComponent(CardLogic);
         
@@ -400,25 +428,16 @@ export class CardLogic extends Component {
             c.name.startsWith("card") || c.name.includes("faceDown")
         );
         
-        // Exclude control nodes
         const validStockCards = stockCards.filter(c => 
              c !== stockLogic?.visualDeckTop && c !== stockLogic?.emptyStockVisual
         );
 
         if (validStockCards.length === 0) {
             console.log("[CardLogic] 🛑 DECK DEPLETED: Waste move emptied the entire deck.");
-            
-            // 3. Trigger "No Reset" Visual
             if (stockLogic) {
-                if (stockLogic.emptyStockVisual) {
-                    stockLogic.emptyStockVisual.active = true;
-                }
-                if (stockLogic.visualDeckTop) {
-                    stockLogic.visualDeckTop.active = false;
-                }
-                if (stockLogic.placeholderNode) {
-                    stockLogic.placeholderNode.active = false;
-                }
+                if (stockLogic.emptyStockVisual) stockLogic.emptyStockVisual.active = true;
+                if (stockLogic.visualDeckTop) stockLogic.visualDeckTop.active = false;
+                if (stockLogic.placeholderNode) stockLogic.placeholderNode.active = false;
             }
         }
     }
@@ -450,24 +469,18 @@ export class CardLogic extends Component {
         let targetParent = this.node;
         if (this.gameManager && this.gameManager.globalOverlay) {
             targetParent = this.gameManager.globalOverlay;
-            console.log(`[CardLogic-Feedback] Using globalOverlay as parent.`);
         } else if (this.gameManager && this.gameManager.node) {
             targetParent = this.gameManager.node;
-            console.log(`[CardLogic-Feedback] Overlay missing, using GameManager node.`);
         } else {
-            console.warn(`[CardLogic-Feedback] Fallback to parent (Layout danger).`);
             targetParent = this.node.parent || this.node;
         }
 
         const touchPos = event.getUILocation();
         const worldPos = new Vec3(touchPos.x, touchPos.y, 0);
-
-        console.log(`[CardLogic-Feedback] 👆 Click registered at UI Location: (X: ${touchPos.x.toFixed(2)}, Y: ${touchPos.y.toFixed(2)})`);
-
         const parentTrans = targetParent.getComponent(UITransform);
         const localPos = parentTrans ? parentTrans.convertToNodeSpaceAR(worldPos) : worldPos;
 
-        console.log(`[CardLogic-Feedback] 🎯 Target Parent: ${targetParent.name} | Calculated Local Position: (X: ${localPos.x.toFixed(2)}, Y: ${localPos.y.toFixed(2)})`);
+        console.log(`[CardLogic] ❌ Showing Error Feedback at: (${localPos.x.toFixed(2)}, ${localPos.y.toFixed(2)})`);
 
         const feedbackNode = new Node('WrongClickFeedback');
         targetParent.addChild(feedbackNode);
@@ -480,7 +493,6 @@ export class CardLogic extends Component {
         const transform = feedbackNode.addComponent(UITransform);
 
         transform.setContentSize(80, 80);
-
         feedbackNode.setScale(new Vec3(0, 0, 1)); 
 
         tween(feedbackNode)
@@ -542,11 +554,10 @@ export class CardLogic extends Component {
 
             const angle = Math.random() * 360;
             const radian = angle * Math.PI / 180;
-            
             const speed = 300 + (Math.random() - 0.5) * 150; 
             const lifetime = 0.6 + (Math.random() - 0.5) * 0.3; 
-
             const startScale = 0.3 + Math.random() * 0.4;
+            
             particle.setScale(startScale, startScale, 1);
 
             const distance = speed * lifetime;
