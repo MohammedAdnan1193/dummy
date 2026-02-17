@@ -103,11 +103,13 @@ export class GameManager extends Component {
             if (this.stackOutline && bestMove.from) {
                 let cardCount = 1;
                 
-                // If moving a substack in Tableau, calculate size
-                if (bestMove.from.parent && bestMove.from.parent.name.includes("Tableau")) {
+                // 🔴 FIX: Use array inclusion check instead of name string check
+                // This correctly identifies if the card is in a Tableau pile, regardless of the node name
+                if (bestMove.from.parent && this.tableauNodes.indexOf(bestMove.from.parent) !== -1){
                     const children = bestMove.from.parent.children;
                     const index = children.indexOf(bestMove.from);
                     if (index !== -1) {
+                        // Calculate cards from this card down to the end of the array
                         cardCount = children.length - index;
                     }
                 }
@@ -130,8 +132,8 @@ export class GameManager extends Component {
     /**
      * Scans all possible moves and returns the one with the highest strategic score.
      * Priorities:
-     * 100: Reveal Hidden Card (Opener)
-     * 80:  Move to Foundation (Scoring)
+     * 100:  Move to Foundation (Scoring)
+     * 90: Reveal Hidden Card (Opener)
      * 60:  Waste to Tableau (Unlocking Deck)
      * 50:  Clear Tableau Slot (Emptying a pile for a King)
      * 40:  Stock Interaction (Drawing)
@@ -171,7 +173,6 @@ export class GameManager extends Component {
 
                     // CHECK 2: Are we the bottom card AND is the target non-empty?
                     // siblingIndex === 0 means we are at the bottom of our current pile (emptying it).
-                    // tTarget.children.length > 0 means we are moving to a pile that has cards (consolidating).
                     const isBottomCard = (siblingIndex === 1);
                     const isTargetNonEmpty = tTarget.children.length > 1;
                     const isClearSlotMove = isBottomCard && isTargetNonEmpty;
@@ -239,7 +240,7 @@ export class GameManager extends Component {
 
         // Debug Log: Show top 3 moves
         console.log(`[AI Logic] Calculated ${allMoves.length} potential moves. Top candidates:`);
-        allMoves.slice(0, allMoves.length).forEach((m, idx) => {
+        allMoves.slice(0, 3).forEach((m, idx) => {
             console.log(`   #${idx+1}: [${m.type}] Score: ${m.score} (Card: ${m.from.name})`);
         });
 
