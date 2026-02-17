@@ -17,6 +17,14 @@ interface CardLogicComponent extends Component {
     emptyStockVisual?: Node;
 }
 
+// 3. DEFINE STRATEGIC MOVE INTERFACE
+interface StrategicMove {
+    type: string;
+    from: Node;
+    to?: Node;
+    score: number;
+}
+
 @ccclass('GameManager')
 export class GameManager extends Component {
 
@@ -48,7 +56,7 @@ export class GameManager extends Component {
     private _isHintActive: boolean = false;
 
     // --- WIN CONDITION STATE ---
-    private _totalHiddenCards: number = 21; // Standard Klondike Tableau (0+1+2+3+4+5+6 = 21)
+    private _totalHiddenCards: number = 21; // Standard Klondike Tableau
     private _revealedCount: number = 0;
 
     onLoad() {
@@ -76,27 +84,27 @@ export class GameManager extends Component {
     public addValidMove(clickedNode: Node) {
         this.resetIdleTimer();
         this.ensureAudioPlays();
-        this.checkFoundationWinCondition(); // Keep checking foundations too just in case
+        this.checkFoundationWinCondition(); 
     }
 
     // =========================================================================
-    // 🧠 AI HINT LOGIC
+    // 🧠 AI HINT LOGIC (UPDATED WITH ADVANCED STRATEGY)
     // =========================================================================
 
     private showDynamicHint() {
-        console.log("[GameManager] 🔍 Starting findBestMove()...");
+        console.log("[GameManager] 🔍 Starting findBestMove() scan...");
         const bestMove = this.findBestMove();
 
         if (bestMove) {
             this._isHintActive = true;
-            console.log(`[GameManager] ✅ BEST MOVE FOUND: ${bestMove.type} on ${bestMove.from?.name}`);
+            console.log(`[GameManager] ✅ WINNING MOVE: [${bestMove.type}] Score: ${bestMove.score} | Card: ${bestMove.from?.name}`);
             
             // SHOW STACK OUTLINE
             if (this.stackOutline && bestMove.from) {
                 let cardCount = 1;
                 
-                // If moving a substack in Tableau, calculate how many cards are attached below it
-                if (bestMove.type === 'TableauToTableau' && bestMove.from.parent) {
+                // If moving a substack in Tableau, calculate size
+                if (bestMove.from.parent && bestMove.from.parent.name.includes("Tableau")) {
                     const children = bestMove.from.parent.children;
                     const index = children.indexOf(bestMove.from);
                     if (index !== -1) {
@@ -104,11 +112,11 @@ export class GameManager extends Component {
                     }
                 }
                 
-                console.log(`[GameManager] 🟩 Showing Outline on ${bestMove.from.name} (Count: ${cardCount})`);
+                console.log(`[GameManager] 🟩 Visualizing Outline on ${bestMove.from.name} (Stack Size: ${cardCount})`);
                 this.stackOutline.show(bestMove.from, cardCount);
             }
         } else {
-            console.log("[GameManager] 🤷 No Valid Moves Found.");
+            console.log("[GameManager] 🤷 No Valid Moves Found anywhere on board.");
         }
     }
 
@@ -119,63 +127,123 @@ export class GameManager extends Component {
         this._isHintActive = false;
     }
 
-    private findBestMove(): { type: string, from: Node, to?: Node } | null {
-        // 1. TABLEAU -> FOUNDATION
-        for (const tNode of this.tableauNodes) {
-            const topCard = this.getTopCard(tNode);
-            if (topCard) {
-                const target = this.checkFoundationMoves(topCard).node;
-                if (target) return { type: 'TableauToFoundation', from: topCard, to: target };
-            }
-        }
+    /**
+     * Scans all possible moves and returns the one with the highest strategic score.
+     * Priorities:
+     * 100: Reveal Hidden Card (Opener)
+     * 80:  Move to Foundation (Scoring)
+     * 60:  Waste to Tableau (Unlocking Deck)
+     * 50:  Clear Tableau Slot (Emptying a pile for a King)
+     * 40:  Stock Interaction (Drawing)
+     * 10:  Tableau Reposition (Sideways move with no strategic gain)
+     */
+    private findBestMove(): StrategicMove | null {
+        const allMoves: StrategicMove[] = [];
 
-        // 2. TABLEAU -> TABLEAU
+        // ---------------------------------------------------------
+        // 1. SCAN TABLEAU MOVES (Scores 100, 80, 50, 10)
+        // ---------------------------------------------------------
         for (let i = 0; i < this.tableauNodes.length; i++) {
             const pile = this.tableauNodes[i];
             const faceUpCards = pile.children.filter(c => c.active && c.name.startsWith("card"));
+            
             if (faceUpCards.length === 0) continue;
 
-            const pileLogic = pile.getComponent('CardLogic') as unknown as CardLogicComponent;
-
+            // Iterate through every face-up card
             for (const sourceCard of faceUpCards) {
-                const cardData = pileLogic?.getCardData(sourceCard);
-                if (cardData && cardData.value === 12) {
-                    const hasHiddenCards = pile.children.some(c => c.active && c.name.includes("faceDown"));
-                    if (!hasHiddenCards) continue; 
+                
+                // A. Check Foundation (Score 80)
+                if (sourceCard === faceUpCards[faceUpCards.length - 1]) {
+                    const fTarget = this.checkFoundationMoves(sourceCard).node;
+                    if (fTarget) {
+                        allMoves.push({ type: 'TableauToFoundation', from: sourceCard, to: fTarget, score: 100 });
+                    }
                 }
 
-                const target = this.checkTableauMoves(sourceCard, i);
-                if (target) return { type: 'TableauToTableau', from: sourceCard, to: target };
+                // B. Check Tableau Transfer
+                const tTarget = this.checkTableauMoves(sourceCard, i);
+                if (tTarget) {
+                    const siblingIndex = sourceCard.getSiblingIndex();
+                    
+                    // CHECK 1: Is there a hidden card below us?
+                    const cardBelow = pile.children[siblingIndex - 1];
+                    const isRevealing = cardBelow && cardBelow.name.includes("faceDown");
+
+                    // CHECK 2: Are we the bottom card AND is the target non-empty?
+                    // siblingIndex === 0 means we are at the bottom of our current pile (emptying it).
+                    // tTarget.children.length > 0 means we are moving to a pile that has cards (consolidating).
+                    const isBottomCard = (siblingIndex === 1);
+                    const isTargetNonEmpty = tTarget.children.length > 1;
+                    const isClearSlotMove = isBottomCard && isTargetNonEmpty;
+
+                    if (isRevealing) {
+                        allMoves.push({ type: 'RevealHiddenCard', from: sourceCard, to: tTarget, score: 90 });
+                    } 
+                    else if (isClearSlotMove) {
+                        // This moves a full stack to another stack, freeing up an empty Tableau slot.
+                        allMoves.push({ type: 'ClearTableauSlot', from: sourceCard, to: tTarget, score: 50 });
+                    } 
+                    else {
+                        // Just moving cards sideways (e.g. King to Empty, or partial stack move that reveals nothing)
+                        allMoves.push({ type: 'TableauReposition', from: sourceCard, to: tTarget, score: 10 });
+                    }
+                }
             }
         }
 
-        // 3. WASTE -> FOUNDATION
+        // ---------------------------------------------------------
+        // 2. SCAN WASTE MOVES (Scores 80, 60)
+        // ---------------------------------------------------------
         const wasteTop = this.getTopCard(this.wasteNode);
         if (wasteTop) {
-            const target = this.checkFoundationMoves(wasteTop).node;
-            if (target) return { type: 'WasteToFoundation', from: wasteTop, to: target };
-        }
+            // A. Waste -> Foundation
+            const fTarget = this.checkFoundationMoves(wasteTop).node;
+            if (fTarget) {
+                allMoves.push({ type: 'WasteToFoundation', from: wasteTop, to: fTarget, score: 80 });
+            }
 
-        // 4. WASTE -> TABLEAU
-        if (wasteTop) {
-            const target = this.checkTableauMoves(wasteTop, -1);
-            if (target) return { type: 'WasteToTableau', from: wasteTop, to: target };
-        }
-
-        // 5. STOCK CHECK
-        const stockLogic = this.stockNode.getComponent('CardLogic') as unknown as CardLogicComponent;
-        const stockCount = this.stockNode.children.filter(c => c.name.startsWith("card") || c.name.includes("faceDown")).length;
-
-        if (stockCount > 0) return { type: 'DrawStock', from: this.stockNode };
-        
-        const wasteCount = this.wasteNode.children.filter(c => c.name.startsWith("card")).length;
-        if (wasteCount > 0) {
-            if (stockLogic && !stockLogic.emptyStockVisual?.active) {
-                return { type: 'RestackStock', from: this.stockNode };
+            // B. Waste -> Tableau
+            const tTarget = this.checkTableauMoves(wasteTop, -1);
+            if (tTarget) {
+                allMoves.push({ type: 'WasteToTableau', from: wasteTop, to: tTarget, score: 60 });
             }
         }
 
-        return null;
+        // ---------------------------------------------------------
+        // 3. SCAN STOCK MOVES (Score 40)
+        // ---------------------------------------------------------
+        const stockCount = this.stockNode.children.filter(c => c.name.startsWith("card") || c.name.includes("faceDown")).length;
+        
+        if (stockCount > 0) {
+            allMoves.push({ type: 'DrawStock', from: this.stockNode, score: 40 });
+        } else {
+            // Check restack
+            const stockLogic = this.stockNode.getComponent('CardLogic') as unknown as CardLogicComponent;
+            const wasteCount = this.wasteNode.children.filter(c => c.name.startsWith("card")).length;
+            
+            if (wasteCount > 0 && stockLogic && !stockLogic.emptyStockVisual?.active) {
+                allMoves.push({ type: 'RestackStock', from: this.stockNode, score: 40 });
+            }
+        }
+
+        // ---------------------------------------------------------
+        // 4. SORT AND RETURN WINNER
+        // ---------------------------------------------------------
+        if (allMoves.length === 0) {
+            console.log("[GameManager] 🚫 No moves available.");
+            return null;
+        }
+
+        // Sort descending by score
+        allMoves.sort((a, b) => b.score - a.score);
+
+        // Debug Log: Show top 3 moves
+        console.log(`[AI Logic] Calculated ${allMoves.length} potential moves. Top candidates:`);
+        allMoves.slice(0, allMoves.length).forEach((m, idx) => {
+            console.log(`   #${idx+1}: [${m.type}] Score: ${m.score} (Card: ${m.from.name})`);
+        });
+
+        return allMoves[0];
     }
 
     // --- HELPERS ---
@@ -220,6 +288,7 @@ export class GameManager extends Component {
             const tTop = this.getTopCard(tNode);
 
             if (!tTop) {
+                // If pile is empty, only Kings (12) can go there
                 if (cardData.value === 12) return tNode;
             } else {
                 const tData = tLogic?.getCardData(tTop);
@@ -237,9 +306,6 @@ export class GameManager extends Component {
     // 🏆 WIN CONDITION LOGIC
     // =========================================================================
 
-    /**
-     * Called by CardFlipper.ts whenever a face-down card is flipped face-up.
-     */
     public onCardRevealed() {
         this._revealedCount++;
         console.log(`[GameManager] 🔓 Card Revealed! Progress: ${this._revealedCount} / ${this._totalHiddenCards}`);
@@ -265,20 +331,15 @@ export class GameManager extends Component {
         this._gameWon = true;
 
         this.hideDynamicHint();
-        this.scheduleOnce(() => {
-            this.showCTA();
-        }, 0.5);
+        this.scheduleOnce(() => { this.showCTA(); }, 0.5);
     }
 
     private showCTA() {
         if (!this.ctaScreen || this.ctaScreen.active) return;
-        
         this.ctaScreen.active = true;
         
-        // --- 🔴 FIX: SAFELY GET OR ADD UIOPACITY ---
         const op = this.ctaScreen.getComponent(UIOpacity) || this.ctaScreen.addComponent(UIOpacity);
         op.opacity = 0;
-
         tween(op).to(0.3, { opacity: 255 }).start();
         
         this.ctaScreen.setScale(new Vec3(0, 0, 1));
@@ -318,13 +379,10 @@ export class GameManager extends Component {
     
     private setupInitialState() {
         if (this.mainNode) this.mainNode.active = false;
-        
         if (this.ctaScreen) {
             this.ctaScreen.active = false;
-            // Pre-add opacity to avoid issues
             if (!this.ctaScreen.getComponent(UIOpacity)) this.ctaScreen.addComponent(UIOpacity);
         }
-        
         if (this.stackOutline) this.stackOutline.clear();
     }
     
