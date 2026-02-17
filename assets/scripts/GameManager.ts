@@ -1,23 +1,24 @@
-import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip, UITransform } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip, UITransform, Label, CCInteger, Color } from 'cc';
 import { StackOutline } from './stackOutline'; 
+// REMOVED: import { CardLogic } from './CardLogic'; to prevent Circular Dependency
 
 const { ccclass, property } = _decorator;
 
-// 1. DEFINE LOCAL INTERFACES 
+// 1. DEFINE LOCAL INTERFACES (Duck Typing)
+// We define the shape of CardLogic here so we don't need to import the actual file.
 interface CardData {
-    value: number;  // 0-12 (Ace-King)
-    suit: number;   // 0-3
+    value: number;  
+    suit: number;   
     isRed: boolean;
     node: Node;
 }
 
-// 2. DEFINE A "SHAPE" FOR THE COMPONENT 
 interface CardLogicComponent extends Component {
     getCardData(node: Node): CardData | null;
     emptyStockVisual?: Node;
 }
 
-// 3. DEFINE STRATEGIC MOVE INTERFACE
+// 2. DEFINE STRATEGIC MOVE INTERFACE
 interface StrategicMove {
     type: string;
     from: Node;
@@ -31,10 +32,17 @@ export class GameManager extends Component {
     // --- UI REFERENCES ---
     @property(Node) public introNode: Node = null!;
     @property(Node) public mainNode: Node = null!;
-    @property(Node) public mainLabel: Node = null!;
-    @property(Node) public ctaScreen: Node = null!;
+    @property(Node) public ctaScreen: Node = null!;       // WIN SCREEN
+    @property(Node) public youLostScreen: Node = null!;   // LOSE SCREEN
     @property(Node) public globalOverlay: Node = null!;
     @property({ type: AudioClip }) public bgmClip: AudioClip = null!;
+
+    // --- MOVES SYSTEM ---
+    @property({ type: Label, tooltip: "Label to display remaining moves" }) 
+    public movesLabel: Label = null!;
+
+    @property({ type: CCInteger, tooltip: "Maximum number of moves allowed before losing" }) 
+    public maxMoves: number = 50;
 
     // --- PILE REFERENCES ---
     @property({ type: [Node] }) public tableauNodes: Node[] = [];
@@ -52,11 +60,13 @@ export class GameManager extends Component {
     // --- INTERNAL STATE ---
     private _audioSource: AudioSource = null!;
     private _gameWon: boolean = false;
+    private _gameOver: boolean = false; 
     private _idleTimer: number = 0;
     private _isHintActive: boolean = false;
+    private _currentMoves: number = 0;   
 
     // --- WIN CONDITION STATE ---
-    private _totalHiddenCards: number = 21; // Standard Klondike Tableau
+    private _totalHiddenCards: number = 21; 
     private _revealedCount: number = 0;
 
     onLoad() {
@@ -66,10 +76,9 @@ export class GameManager extends Component {
     }
 
     update(dt: number) {
-        if (!this._gameWon && !this._isHintActive && this.mainNode.active) {
+        if (!this._gameWon && !this._gameOver && !this._isHintActive && this.mainNode.active) {
             this._idleTimer += dt;
             if (this._idleTimer >= this.idleHintDelay) {
-                console.log("[GameManager] ⏰ Idle Timer Triggered! Searching for hint...");
                 this.showDynamicHint();
             }
         }
@@ -81,44 +90,87 @@ export class GameManager extends Component {
         this.hideDynamicHint();
     }
 
+    // -------------------------------------------------------------------------
+    // 🎮 MOVE HANDLER
+    // -------------------------------------------------------------------------
     public addValidMove(clickedNode: Node) {
+        if (this._gameWon || this._gameOver) return;
+
         this.resetIdleTimer();
         this.ensureAudioPlays();
+
+        // 1. Decrease Moves
+        this._currentMoves--;
+        this.updateMovesLabel();
+
+        // 2. Check Lose Condition
+        if (this._currentMoves <= 0) {
+            console.log("[GameManager] 💀 MOVES RAN OUT! Triggering Lose State.");
+            this.triggerLoseState();
+            return;
+        }
+
+        // 3. Check Win Condition
         this.checkFoundationWinCondition(); 
     }
 
+    private updateMovesLabel() {
+        if (this.movesLabel) {
+            this.movesLabel.string = `${this._currentMoves}`;
+            
+            // FIXED: Use standard Color class
+            // if (this._currentMoves <= 5) {
+            //     this.movesLabel.color = new Color(255, 0, 0, 255);
+            // } else {
+            //     this.movesLabel.color = new Color(255, 255, 255, 255);
+            // }
+        }
+    }
+
+    private triggerLoseState() {
+        if (this._gameWon || this._gameOver) return;
+        this._gameOver = true;
+        
+        this.hideDynamicHint();
+        this.scheduleOnce(() => { this.showYouLostScreen(); }, 0.5);
+    }
+
+    private showYouLostScreen() {
+        if (!this.youLostScreen) return;
+        
+        this.youLostScreen.active = true;
+        const op = this.youLostScreen.getComponent(UIOpacity) || this.youLostScreen.addComponent(UIOpacity);
+        op.opacity = 0;
+        
+        tween(op).to(0.5, { opacity: 255 }).start();
+
+        this.youLostScreen.setScale(new Vec3(0, 0, 1));
+        tween(this.youLostScreen)
+            .to(0.5, { scale: new Vec3(1.1, 1.1, 1) }, { easing: 'backOut' })
+            .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+            .start();
+    }
+
     // =========================================================================
-    // 🧠 AI HINT LOGIC (UPDATED WITH ADVANCED STRATEGY)
+    // 🧠 AI HINT LOGIC 
     // =========================================================================
 
     private showDynamicHint() {
-        console.log("[GameManager] 🔍 Starting findBestMove() scan...");
         const bestMove = this.findBestMove();
 
         if (bestMove) {
             this._isHintActive = true;
-            console.log(`[GameManager] ✅ WINNING MOVE: [${bestMove.type}] Score: ${bestMove.score} | Card: ${bestMove.from?.name}`);
-            
-            // SHOW STACK OUTLINE
             if (this.stackOutline && bestMove.from) {
                 let cardCount = 1;
-                
-                // 🔴 FIX: Use array inclusion check instead of name string check
-                // This correctly identifies if the card is in a Tableau pile, regardless of the node name
                 if (bestMove.from.parent && this.tableauNodes.indexOf(bestMove.from.parent) !== -1){
                     const children = bestMove.from.parent.children;
                     const index = children.indexOf(bestMove.from);
                     if (index !== -1) {
-                        // Calculate cards from this card down to the end of the array
                         cardCount = children.length - index;
                     }
                 }
-                
-                console.log(`[GameManager] 🟩 Visualizing Outline on ${bestMove.from.name} (Stack Size: ${cardCount})`);
                 this.stackOutline.show(bestMove.from, cardCount);
             }
-        } else {
-            console.log("[GameManager] 🤷 No Valid Moves Found anywhere on board.");
         }
     }
 
@@ -129,32 +181,18 @@ export class GameManager extends Component {
         this._isHintActive = false;
     }
 
-    /**
-     * Scans all possible moves and returns the one with the highest strategic score.
-     * Priorities:
-     * 100:  Move to Foundation (Scoring)
-     * 90: Reveal Hidden Card (Opener)
-     * 60:  Waste to Tableau (Unlocking Deck)
-     * 50:  Clear Tableau Slot (Emptying a pile for a King)
-     * 40:  Stock Interaction (Drawing)
-     * 10:  Tableau Reposition (Sideways move with no strategic gain)
-     */
     private findBestMove(): StrategicMove | null {
         const allMoves: StrategicMove[] = [];
 
-        // ---------------------------------------------------------
-        // 1. SCAN TABLEAU MOVES (Scores 100, 80, 50, 10)
-        // ---------------------------------------------------------
+        // 1. SCAN TABLEAU MOVES
         for (let i = 0; i < this.tableauNodes.length; i++) {
             const pile = this.tableauNodes[i];
             const faceUpCards = pile.children.filter(c => c.active && c.name.startsWith("card"));
             
             if (faceUpCards.length === 0) continue;
 
-            // Iterate through every face-up card
             for (const sourceCard of faceUpCards) {
-                
-                // A. Check Foundation (Score 80)
+                // A. Check Foundation
                 if (sourceCard === faceUpCards[faceUpCards.length - 1]) {
                     const fTarget = this.checkFoundationMoves(sourceCard).node;
                     if (fTarget) {
@@ -167,12 +205,9 @@ export class GameManager extends Component {
                 if (tTarget) {
                     const siblingIndex = sourceCard.getSiblingIndex();
                     
-                    // CHECK 1: Is there a hidden card below us?
                     const cardBelow = pile.children[siblingIndex - 1];
                     const isRevealing = cardBelow && cardBelow.name.includes("faceDown");
 
-                    // CHECK 2: Are we the bottom card AND is the target non-empty?
-                    // siblingIndex === 0 means we are at the bottom of our current pile (emptying it).
                     const isBottomCard = (siblingIndex === 1);
                     const isTargetNonEmpty = tTarget.children.length > 1;
                     const isClearSlotMove = isBottomCard && isTargetNonEmpty;
@@ -181,44 +216,36 @@ export class GameManager extends Component {
                         allMoves.push({ type: 'RevealHiddenCard', from: sourceCard, to: tTarget, score: 90 });
                     } 
                     else if (isClearSlotMove) {
-                        // This moves a full stack to another stack, freeing up an empty Tableau slot.
                         allMoves.push({ type: 'ClearTableauSlot', from: sourceCard, to: tTarget, score: 50 });
                     } 
                     else {
-                        // Just moving cards sideways (e.g. King to Empty, or partial stack move that reveals nothing)
                         allMoves.push({ type: 'TableauReposition', from: sourceCard, to: tTarget, score: 10 });
                     }
                 }
             }
         }
 
-        // ---------------------------------------------------------
-        // 2. SCAN WASTE MOVES (Scores 80, 60)
-        // ---------------------------------------------------------
+        // 2. SCAN WASTE MOVES
         const wasteTop = this.getTopCard(this.wasteNode);
         if (wasteTop) {
-            // A. Waste -> Foundation
             const fTarget = this.checkFoundationMoves(wasteTop).node;
             if (fTarget) {
                 allMoves.push({ type: 'WasteToFoundation', from: wasteTop, to: fTarget, score: 80 });
             }
 
-            // B. Waste -> Tableau
             const tTarget = this.checkTableauMoves(wasteTop, -1);
             if (tTarget) {
                 allMoves.push({ type: 'WasteToTableau', from: wasteTop, to: tTarget, score: 60 });
             }
         }
 
-        // ---------------------------------------------------------
-        // 3. SCAN STOCK MOVES (Score 40)
-        // ---------------------------------------------------------
+        // 3. SCAN STOCK MOVES
         const stockCount = this.stockNode.children.filter(c => c.name.startsWith("card") || c.name.includes("faceDown")).length;
         
         if (stockCount > 0) {
             allMoves.push({ type: 'DrawStock', from: this.stockNode, score: 40 });
         } else {
-            // Check restack
+            // FIXED: Cast to local interface instead of imported Class
             const stockLogic = this.stockNode.getComponent('CardLogic') as unknown as CardLogicComponent;
             const wasteCount = this.wasteNode.children.filter(c => c.name.startsWith("card")).length;
             
@@ -227,23 +254,8 @@ export class GameManager extends Component {
             }
         }
 
-        // ---------------------------------------------------------
-        // 4. SORT AND RETURN WINNER
-        // ---------------------------------------------------------
-        if (allMoves.length === 0) {
-            console.log("[GameManager] 🚫 No moves available.");
-            return null;
-        }
-
-        // Sort descending by score
+        if (allMoves.length === 0) return null;
         allMoves.sort((a, b) => b.score - a.score);
-
-        // Debug Log: Show top 3 moves
-        console.log(`[AI Logic] Calculated ${allMoves.length} potential moves. Top candidates:`);
-        allMoves.slice(0, 3).forEach((m, idx) => {
-            console.log(`   #${idx+1}: [${m.type}] Score: ${m.score} (Card: ${m.from.name})`);
-        });
-
         return allMoves[0];
     }
 
@@ -256,6 +268,7 @@ export class GameManager extends Component {
     }
 
     private checkFoundationMoves(cardNode: Node): { node: Node | null } {
+        // FIXED: Cast to local interface
         const cardLogic = cardNode.parent?.getComponent('CardLogic') as unknown as CardLogicComponent;
         const cardData = cardLogic?.getCardData(cardNode);
         if (!cardData) return { node: null };
@@ -277,6 +290,7 @@ export class GameManager extends Component {
     }
 
     private checkTableauMoves(cardNode: Node, ignoreIndex: number): Node | null {
+        // FIXED: Cast to local interface
         const cardLogic = cardNode.parent?.getComponent('CardLogic') as unknown as CardLogicComponent;
         const cardData = cardLogic?.getCardData(cardNode);
         if (!cardData) return null;
@@ -289,7 +303,6 @@ export class GameManager extends Component {
             const tTop = this.getTopCard(tNode);
 
             if (!tTop) {
-                // If pile is empty, only Kings (12) can go there
                 if (cardData.value === 12) return tNode;
             } else {
                 const tData = tLogic?.getCardData(tTop);
@@ -312,23 +325,21 @@ export class GameManager extends Component {
         console.log(`[GameManager] 🔓 Card Revealed! Progress: ${this._revealedCount} / ${this._totalHiddenCards}`);
 
         if (this._revealedCount >= this._totalHiddenCards) {
-            console.log("[GameManager] 🎉 ALL HIDDEN CARDS REVEALED! Triggering Win State.");
             this.triggerWinState();
         }
     }
 
     private checkFoundationWinCondition() {
-        if (this._gameWon) return;
+        if (this._gameWon || this._gameOver) return;
         let count = 0;
         this.foundationNodes.forEach(f => count += f.children.filter(c => c.name.startsWith("card")).length);
         if (count >= 52) {
-            console.log("[GameManager] 🏆 FOUNDATIONS FULL! Triggering Win State.");
             this.triggerWinState();
         }
     }
 
     private triggerWinState() {
-        if (this._gameWon) return;
+        if (this._gameWon || this._gameOver) return;
         this._gameWon = true;
 
         this.hideDynamicHint();
@@ -361,7 +372,7 @@ export class GameManager extends Component {
     }
 
     // =========================================================================
-    // ⚙️ STANDARD SETUP & AUDIO
+    // ⚙️ STANDARD SETUP
     // =========================================================================
 
     private initBGM() {
@@ -380,10 +391,20 @@ export class GameManager extends Component {
     
     private setupInitialState() {
         if (this.mainNode) this.mainNode.active = false;
+        
         if (this.ctaScreen) {
             this.ctaScreen.active = false;
             if (!this.ctaScreen.getComponent(UIOpacity)) this.ctaScreen.addComponent(UIOpacity);
         }
+
+        if (this.youLostScreen) {
+            this.youLostScreen.active = false;
+            if (!this.youLostScreen.getComponent(UIOpacity)) this.youLostScreen.addComponent(UIOpacity);
+        }
+
+        this._currentMoves = this.maxMoves;
+        this.updateMovesLabel();
+
         if (this.stackOutline) this.stackOutline.clear();
     }
     

@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, UITransform, tween, isValid, SpriteFrame, Sprite, UIOpacity, EventTouch, Layout, AudioSource, AudioClip, Enum } from 'cc';
+import { _decorator, Component, Node, Vec3, UITransform, tween, isValid, SpriteFrame, Sprite, UIOpacity, EventTouch, Layout, AudioSource, AudioClip, Enum, Rect, Vec2 } from 'cc';
 import { CardFlipper } from './flip'; 
 import { GameManager } from './GameManager'; 
 
@@ -53,49 +53,282 @@ export class CardLogic extends Component {
 
     private _audioSource: AudioSource = null!;
 
+    // --- DRAG AND DROP STATE ---
+    private _isDragging: boolean = false;
+    private _dragThresholdPassed: boolean = false;
+    private _dragStartPos: Vec2 = new Vec2();
+    private _dragOffset: Vec3 = new Vec3();
+    private _draggedCards: Node[] = [];
+    
+    // To return cards if drop fails
+    private _originalParent: Node = null!;
+    private _originalPositions: Vec3[] = [];
+    private _originalSiblingIndices: number[] = [];
+
     onLoad() {
         console.log(`[CardLogic] 🟢 INITIALIZING ${this.node.name} (Type: ${HolderType[this.holderType]})`);
         this._audioSource = this.getComponent(AudioSource) || this.addComponent(AudioSource);
-        this.node.on(Node.EventType.TOUCH_START, this.onHolderClicked, this);
+        
+        // We bind the touch start. Move/End are bound dynamically.
+        this.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
+        
         this.updatePlaceholderVisibility();
     }
 
-    getCardData(cardNode: Node): CardData | null {
-        // Log rejected nodes for debugging
-        if (!cardNode.active || 
-            cardNode.name === "default" || 
-            cardNode.name.includes("faceDown") ||
-            cardNode.name.includes("foundation_A") || 
-            cardNode === this.visualDeckTop || 
-            cardNode === this.emptyStockVisual || 
-            cardNode.name === "WrongClickFeedback" || 
-            !cardNode.name.startsWith("card")) {      
-            return null;
-        }
-        
-        const indexStr = cardNode.name.replace("card", "");
-        const index = parseInt(indexStr);
-        
-        if (isNaN(index)) {
-            console.warn(`[CardLogic] ⚠️ Failed to parse index from card name: ${cardNode.name}`);
-            return null;
+    // =========================================================================
+    // ✋ TOUCH & DRAG LOGIC
+    // =========================================================================
+
+    onTouchStart(event: EventTouch) {
+        if (this.gameManager) this.gameManager.resetIdleTimer();
+
+        // 1. Foundation/Stock usually don't support dragging OUT (Foundation is strict, Stock is click-only)
+        if (this.holderType === HolderType.STOCK || this.holderType === HolderType.FOUNDATION) {
+            this.handleStandardClick(event); // Treat as normal click immediately
+            return;
         }
 
-        const data = {
-            value: index % 13,
-            suit: Math.floor(index / 13),
-            isRed: (Math.floor(index / 13) === 1 || Math.floor(index / 13) === 2),
-            node: cardNode
-        };
+        const touchUILoc = event.getUILocation();
+        
+        // 2. Find which card was touched
+        const clickedCard = this.getCardUnderTouch(touchUILoc);
+        
+        // If we touched empty space or a face-down card, treat as normal click logic (e.g., auto-flip)
+        if (!clickedCard || clickedCard.name.includes("faceDown")) {
+            this.handleStandardClick(event);
+            return;
+        }
 
-        // Verbose data log (Optional: Comment out if too noisy)
-        // console.log(`[CardLogic] 📄 Parsed Data for ${cardNode.name}: Value=${data.value}, Red=${data.isRed}`);
-        return data;
+        // 3. Prepare Drag Data
+        const allChildren = this.node.children;
+        const index = allChildren.indexOf(clickedCard);
+        
+        // Get the stack: The clicked card + everything physically above it
+        this._draggedCards = allChildren.slice(index).filter(c => c.active && c !== this.placeholderNode);
+
+        if (this._draggedCards.length === 0) return;
+
+        // 4. Initialize Drag State
+        this._isDragging = true;
+        this._dragThresholdPassed = false;
+        this._dragStartPos.set(touchUILoc.x, touchUILoc.y);
+
+        // Calculate offset so the card doesn't snap to center of finger
+        const cardWorldPos = clickedCard.getWorldPosition();
+        this._dragOffset.set(cardWorldPos.x - touchUILoc.x, cardWorldPos.y - touchUILoc.y, 0);
+
+        // 5. Listen for Move/End
+        this.node.on(Node.EventType.TOUCH_MOVE, this.onDragMove, this);
+        this.node.on(Node.EventType.TOUCH_END, this.onDragEnd, this);
+        this.node.on(Node.EventType.TOUCH_CANCEL, this.onDragEnd, this);
     }
 
-    onHolderClicked(event: EventTouch) {
-        if (this.gameManager) this.gameManager.resetIdleTimer();
+    onDragMove(event: EventTouch) {
+        if (!this._isDragging) return;
+
+        const uiLoc = event.getUILocation();
+
+        // 1. Check Threshold (prevent jittery clicks from becoming drags)
+        if (!this._dragThresholdPassed) {
+            const dist = Vec2.distance(this._dragStartPos, uiLoc);
+            if (dist > 10) { // 10px threshold
+                this._dragThresholdPassed = true;
+                this.startDraggingVisuals(); // Move cards to Overlay
+            } else {
+                return; // Wait until threshold passed
+            }
+        }
+
+        // 2. Move the cards in the Overlay
+        if (this._draggedCards.length > 0 && this.gameManager.globalOverlay) {
+            const overlayTransform = this.gameManager.globalOverlay.getComponent(UITransform);
+            
+            // Calculate Head Position
+            const worldPos = new Vec3(uiLoc.x, uiLoc.y, 0).add(this._dragOffset);
+            const localPos = overlayTransform.convertToNodeSpaceAR(worldPos);
+
+            // Move Head
+            this._draggedCards[0].setPosition(localPos);
+
+            // Move Tail (Simple vertical stack logic for visual consistency while dragging)
+            for (let i = 1; i < this._draggedCards.length; i++) {
+                const prev = this._draggedCards[i-1];
+                // Maintain current offset. Assuming roughly -40y for Tableau
+                this._draggedCards[i].setPosition(prev.position.x, prev.position.y - 45, 0);
+            }
+        }
+    }
+
+    onDragEnd(event: EventTouch) {
+        // Unbind listeners
+        this.node.off(Node.EventType.TOUCH_MOVE, this.onDragMove, this);
+        this.node.off(Node.EventType.TOUCH_END, this.onDragEnd, this);
+        this.node.off(Node.EventType.TOUCH_CANCEL, this.onDragEnd, this);
+        this._isDragging = false;
+
+        // CASE A: It was just a tap (Threshold not passed)
+        if (!this._dragThresholdPassed) {
+            this._draggedCards = []; // Clear ref
+            this.handleStandardClick(event);
+            return;
+        }
+
+        // CASE B: It was a Drag - Check for Drop Target
+        this.attemptDrop();
+    }
+
+    startDraggingVisuals() {
+        const overlay = this.gameManager.globalOverlay;
+        if (!overlay) return;
+
+        const overlayTrans = overlay.getComponent(UITransform);
+        this._originalParent = this.node;
+        this._originalPositions = [];
+        this._originalSiblingIndices = [];
+
+        this._draggedCards.forEach(card => {
+            // Save state for potential snap-back
+            this._originalPositions.push(card.getPosition().clone());
+            this._originalSiblingIndices.push(card.getSiblingIndex());
+
+            // Convert to Overlay Space
+            const worldPos = card.getWorldPosition();
+            const localOverlayPos = overlayTrans.convertToNodeSpaceAR(worldPos);
+
+            card.setParent(overlay);
+            card.setPosition(localOverlayPos);
+            card.parent.setScale(new Vec3(0.7, 0.7, 1))
+            
+            // Visual feedback
+            const op = card.getComponent(UIOpacity) || card.addComponent(UIOpacity);
+            op.opacity = 255; 
+        });
+    }
+
+    attemptDrop() {
+        const headCard = this._draggedCards[0];
+        const headTrans = headCard.getComponent(UITransform);
+        const headRect = headTrans.getBoundingBoxToWorld();
+
+        // Collect all possible targets
+        const targets = [...this.gameManager.tableauNodes, ...this.gameManager.foundationNodes];
         
+        let dropped = false;
+
+        for (const targetNode of targets) {
+            const targetLogic = targetNode.getComponent(CardLogic);
+            if (!targetLogic || targetLogic === this) continue;
+
+            const targetTrans = targetNode.getComponent(UITransform);
+            const targetRect = targetTrans.getBoundingBoxToWorld();
+
+            // Check Collision
+            if (targetRect.intersects(headRect)) {
+                // Check Logic Validity
+                if (this.checkSpecificDropValidity(headCard, targetLogic)) {
+                    console.log(`[CardLogic] 🎯 Drop valid on ${targetNode.name}`);
+                    
+                    // Reset opacity
+                    this._draggedCards.forEach(c => c.getComponent(UIOpacity)!.opacity = 255);
+                    
+                    // Execute Logic
+                    this.executeStackMove(this._draggedCards, targetLogic);
+                    dropped = true;
+                    break;
+                }
+            }
+        }
+
+        if (!dropped) {
+            this.returnCardsToOriginal();
+        }
+    }
+
+    checkSpecificDropValidity(dragHead: Node, targetLogic: CardLogic): boolean {
+        const dragData = this.getCardData(dragHead);
+        if (!dragData) return false;
+
+        const targetChildren = targetLogic.node.children.filter(c => 
+            c.active && c !== targetLogic.placeholderNode && c.name.startsWith("card")
+        );
+
+        const isTargetEmpty = targetChildren.length === 0;
+
+        // 1. Target is Empty
+        if (isTargetEmpty) {
+            if (targetLogic.holderType === HolderType.TABLEAU) {
+                return dragData.value === 12; // King only
+            } else if (targetLogic.holderType === HolderType.FOUNDATION) {
+                // Foundation only accepts Ace (0) and SINGLE cards
+                return dragData.value === 0 && this._draggedCards.length === 1;
+            }
+        } 
+        // 2. Target has Cards
+        else {
+            const topTarget = targetChildren[targetChildren.length - 1];
+            const targetData = this.getCardData(topTarget);
+            if (!targetData) return false;
+
+            if (targetLogic.holderType === HolderType.TABLEAU) {
+                // Tableau Rule: Opposite Color, Value - 1
+                return (dragData.isRed !== targetData.isRed) && (targetData.value === dragData.value + 1);
+            } else if (targetLogic.holderType === HolderType.FOUNDATION) {
+                // Foundation Rule: Same Suit, Value + 1, Single Card only
+                return (dragData.suit === targetData.suit) && (dragData.value === targetData.value + 1) && this._draggedCards.length === 1;
+            }
+        }
+
+        return false;
+    }
+
+    returnCardsToOriginal() {
+        console.log("[CardLogic] ↩️ Drop invalid. Returning.");
+        const overlayTrans = this.gameManager.globalOverlay.getComponent(UITransform);
+        const parentTrans = this._originalParent.getComponent(UITransform);
+
+        this._draggedCards.forEach((card, index) => {
+            const originalPos = this._originalPositions[index];
+            
+            // Calculate where that original local spot is currently in World space
+            const worldDest = parentTrans.convertToWorldSpaceAR(originalPos);
+            // Convert that to Overlay space for the tween target
+            const overlayDest = overlayTrans.convertToNodeSpaceAR(worldDest);
+
+            tween(card)
+                .to(0.2, { position: overlayDest }, { easing: 'sineOut' })
+                .call(() => {
+                    card.setParent(this._originalParent);
+                    card.setPosition(originalPos);
+                    card.setSiblingIndex(this._originalSiblingIndices[index]);
+                    card.getComponent(UIOpacity)!.opacity = 255;
+                })
+                .start();
+        });
+
+        this._draggedCards = [];
+    }
+
+    getCardUnderTouch(uiLoc: Vec2): Node | null {
+        // Check children from Top (Last) to Bottom (0)
+        for (let i = this.node.children.length - 1; i >= 0; i--) {
+            const child = this.node.children[i];
+            if (!child.active || child === this.placeholderNode) continue;
+
+            const trans = child.getComponent(UITransform);
+            // FIX: isHit expects a Vec2, not a Vec3
+            if (trans && trans.isHit(uiLoc)) {
+                return child;
+            }
+        }
+        return null;
+    }
+
+
+    // =========================================================================
+    // 🧠 ORIGINAL CLICK LOGIC (Now "HandleStandardClick")
+    // =========================================================================
+
+    handleStandardClick(event: EventTouch) {
         if (this.holderType === HolderType.FOUNDATION) {
             console.log(`[CardLogic] ❌ Clicks on Foundation are disabled.`);
             this.playSFX(this.errorSound);
@@ -143,8 +376,6 @@ export class CardLogic extends Component {
                 }
             } else {
                 // Tableau Logic: Try to move the whole stack, then sub-stacks
-                // We loop from 0 (Bottom) to length-1 (Top)
-                // This ensures we prioritize moving the LARGEST possible stack first.
                 for (let i = 0; i < faceUpCards.length; i++) {
                     const headCard = faceUpCards[i];
                     const headData = this.getCardData(headCard);
@@ -164,6 +395,39 @@ export class CardLogic extends Component {
         console.log(`[CardLogic] ❌ No valid moves found for click on ${this.node.name}`);
         this.playSFX(this.errorSound);
         this.showWrongFeedback(event);
+    }
+
+    // =========================================================================
+    // 🛠️ DATA & UTILS
+    // =========================================================================
+
+    getCardData(cardNode: Node): CardData | null {
+        // Log rejected nodes for debugging
+        if (!cardNode.active || 
+            cardNode.name === "default" || 
+            cardNode.name.includes("faceDown") ||
+            cardNode.name.includes("foundation_A") || 
+            cardNode === this.visualDeckTop || 
+            cardNode === this.emptyStockVisual || 
+            cardNode.name === "WrongClickFeedback" || 
+            !cardNode.name.startsWith("card")) {      
+            return null;
+        }
+        
+        const indexStr = cardNode.name.replace("card", "");
+        const index = parseInt(indexStr);
+        
+        if (isNaN(index)) {
+            console.warn(`[CardLogic] ⚠️ Failed to parse index from card name: ${cardNode.name}`);
+            return null;
+        }
+
+        return {
+            value: index % 13,
+            suit: Math.floor(index / 13),
+            isRed: (Math.floor(index / 13) === 1 || Math.floor(index / 13) === 2),
+            node: cardNode
+        };
     }
 
     private handleStockClick() {
@@ -301,13 +565,9 @@ export class CardLogic extends Component {
 
             // RULE 1: KING TO EMPTY
             if (isTargetEmpty) {
-                console.log(`[CardLogic]    > Checking Empty Column: ${target.node.name}`);
                 if (movingData.value === 12) { // 12 is King
-                    console.log(`[CardLogic]      ✅ KING RULE PASS: Moving King to empty column.`);
                     this.executeStackMove(sequence, target);
                     return true;
-                } else {
-                    console.log(`[CardLogic]      ❌ KING RULE FAIL: Card is not a King (Value: ${movingData.value}).`);
                 }
             }
 
@@ -316,23 +576,13 @@ export class CardLogic extends Component {
                 const bottomTarget = targetChildren[targetChildren.length - 1];
                 const targetData = this.getCardData(bottomTarget); 
                 
-                // Logging specifically for RULE 2 as requested
                 if (targetData) {
-                    console.log(`[CardLogic] [RULE 2 CHECK] vs Target: ${bottomTarget.name} in ${target.node.name}`);
-                    console.log(`[CardLogic]      > Moving Card: Val=${movingData.value}, Red=${movingData.isRed}`);
-                    console.log(`[CardLogic]      > Target Card: Val=${targetData.value}, Red=${targetData.isRed}`);
-                    
                     const colorMatch = targetData.isRed !== movingData.isRed;
                     const valueMatch = targetData.value === movingData.value + 1;
 
                     if (colorMatch && valueMatch) {
-                        console.log(`[CardLogic]      ✅ MATCH! Opposite Color & Value - 1.`);
-                        console.log(`[CardLogic] ✅ Valid Stack: ${movingData.node.name} -> ${bottomTarget.name} (${target.node.name})`);
                         this.executeStackMove(sequence, target);
                         return true;
-                    } else {
-                        const reason = !colorMatch ? "SAME COLOR" : "WRONG VALUE";
-                        console.log(`[CardLogic]      ❌ MISMATCH: ${reason}`);
                     }
                 }
             }
@@ -357,12 +607,14 @@ export class CardLogic extends Component {
         const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
         const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
         
+        // Reparent to Target immediately (Logic)
         nodesToMove.forEach(cardNode => {
             const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
             op.opacity = 0; 
             cardNode.setParent(target.node); 
         });
 
+        // Update layouts to get final positions
         target.updatePlaceholderVisibility(); 
         if (targetLayout) targetLayout.updateLayout(); 
         this.updatePlaceholderVisibility(); 
@@ -373,10 +625,12 @@ export class CardLogic extends Component {
         const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
         const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
 
+        // Temporarily move to Overlay for Animation
         nodesToMove.forEach((cardNode, index) => {
             cardNode.setParent(overlay);
             cardNode.setWorldPosition(startWorldPositions[index]);
-            cardNode.setWorldScale(startWorldScales[index]);
+            // Keep the scale it had during drag/start
+            cardNode.setWorldScale(startWorldScales[index]); 
             cardNode.getComponent(UIOpacity)!.opacity = 255; 
         });
 
@@ -392,18 +646,26 @@ export class CardLogic extends Component {
                 .to(0.35 + (index * 0.04), { position: targetPosInOverlay }, { 
                     easing: 'sineOut', 
                     onComplete: () => {
-                        cardNode.setParent(target.node);
-                        cardNode.setPosition(finalLocalPositions[index]);
-                        cardNode.setWorldScale(startWorldScales[index]); 
+                        // Place back in target
+                        if (isValid(target.node) && isValid(cardNode)) {
+                            cardNode.setParent(target.node);
+                            cardNode.setPosition(finalLocalPositions[index]);
+                            
+                            // 🛑 CRITICAL FIX:
+                            // Reset Local Scale to (1, 1, 1) immediately.
+                            // This ensures it adopts the Holder's scale (0.6) exactly, 
+                            // preventing the "accumulating scale" bug.
+                            cardNode.setScale(new Vec3(1, 1, 1));
 
-                        if (index === nodesToMove.length - 1) {
-                            console.log(`[CardLogic] <<< MOVE COMPLETE`);
-                            this.playSuccessEffect(cardNode); 
-                            this.checkAndFlipRevealedCard(); 
-                            if (targetLayout) targetLayout.updateLayout();
+                            if (index === nodesToMove.length - 1) {
+                                console.log(`[CardLogic] <<< MOVE COMPLETE`);
+                                this.playSuccessEffect(cardNode); 
+                                this.checkAndFlipRevealedCard(); 
+                                if (targetLayout) targetLayout.updateLayout();
 
-                            if (this.holderType === HolderType.WASTE) {
-                                this.checkDeckDepletion();
+                                if (this.holderType === HolderType.WASTE) {
+                                    this.checkDeckDepletion();
+                                }
                             }
                         }
                     }
@@ -479,8 +741,6 @@ export class CardLogic extends Component {
         const worldPos = new Vec3(touchPos.x, touchPos.y, 0);
         const parentTrans = targetParent.getComponent(UITransform);
         const localPos = parentTrans ? parentTrans.convertToNodeSpaceAR(worldPos) : worldPos;
-
-        console.log(`[CardLogic] ❌ Showing Error Feedback at: (${localPos.x.toFixed(2)}, ${localPos.y.toFixed(2)})`);
 
         const feedbackNode = new Node('WrongClickFeedback');
         targetParent.addChild(feedbackNode);
