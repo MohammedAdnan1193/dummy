@@ -1,0 +1,134 @@
+{
+  "ver": "1.0.27",
+  "importer": "image",
+  "imported": true,
+  "uuid": "543eba75-8648-4b3e-a882-7b545642f8ba",
+  "files": [
+    ".json",
+    ".png"
+  ],
+  "subMetas": {
+    "6c48a": {
+      "importer": "texture",
+      "uuid": "543eba75-8648-4b3e-a882-7b545642f8ba@6c48a",
+      "displayName": "Logo - Casino",
+      "id": "6c48a",
+      "name": "texture",
+      "userData": {
+        "wrapModeS": "clamp-to-edge",
+        "wrapModeT": "clamp-to-edge",
+        "imageUuidOrDatabaseUri": "543eba75-8648-4b3e-a882-7b545642f8ba",
+        "isUuid": true,
+        "visible": false,
+        "minfilter": "linear",
+        "magfilter": "linear",
+        "mipfilter": "none",
+        "anisotropy": 0
+      },
+      "ver": "1.0.22",
+      "imported": true,
+      "files": [
+        ".json"
+      ],
+      "subMetas": {}
+    },
+    "f9941": {
+      "importer": "sprite-frame",
+      "uuid": "543eba75-8648-4b3e-a882-7b545642f8ba@f9941",
+      "displayName": "Logo - Casino",
+      "id": "f9941",
+      "name": "spriteFrame",
+      "userData": {
+        "trimThreshold": 1,
+        "rotated": false,
+        "offsetX": 0.5,
+        "offsetY": 82.5,
+        "trimX": 209,
+        "trimY": 235,
+        "width": 607,
+        "height": 389,
+        "rawWidth": 1024,
+        "rawHeight": 1024,
+        "borderTop": 0,
+        "borderBottom": 0,
+        "borderLeft": 0,
+        "borderRight": 0,
+        "packable": true,
+        "pixelsToUnit": 100,
+        "pivotX": 0.5,
+        "pivotY": 0.5,
+        "meshType": 0,
+        "vertices": {
+          "rawPosition": [
+            -303.5,
+            -194.5,
+            0,
+            303.5,
+            -194.5,
+            0,
+            -303.5,
+            194.5,
+            0,
+            303.5,
+            194.5,
+            0
+          ],
+          "indexes": [
+            0,
+            1,
+            2,
+            2,
+            1,
+            3
+          ],
+          "uv": [
+            209,
+            789,
+            816,
+            789,
+            209,
+            400,
+            816,
+            400
+          ],
+          "nuv": [
+            0.2041015625,
+            0.390625,
+            0.796875,
+            0.390625,
+            0.2041015625,
+            0.7705078125,
+            0.796875,
+            0.7705078125
+          ],
+          "minPos": [
+            -303.5,
+            -194.5,
+            0
+          ],
+          "maxPos": [
+            303.5,
+            194.5,
+            0
+          ]
+        },
+        "isUuid": true,
+        "imageUuidOrDatabaseUri": "543eba75-8648-4b3e-a882-7b545642f8ba@6c48a",
+        "atlasUuid": "",
+        "trimType": "auto"
+      },
+      "ver": "1.0.12",
+      "imported": true,
+      "files": [
+        ".json"
+      ],
+      "subMetas": {}
+    }
+  },
+  "userData": {
+    "type": "sprite-frame",
+    "fixAlphaTransparencyArtifacts": false,
+    "hasAlpha": true,
+    "redirect": "543eba75-8648-4b3e-a882-7b545642f8ba@6c48a"
+  }
+}

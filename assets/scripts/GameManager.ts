@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip, UITransform, Label, CCInteger, Color } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip, UITransform, Label, CCInteger, Color, Prefab, instantiate, Sprite, math, view,SpriteFrame,sys } from 'cc';
 import { StackOutline } from './stackOutline'; 
 
 const { ccclass, property } = _decorator;
@@ -15,9 +15,10 @@ interface CardLogicComponent extends Component {
     getCardData(node: Node): CardData | null;
     visualDeckTop?: Node;
     emptyStockVisual?: Node;
+    placeholderNode?: Node;
+    setHighlightState?(isActive: boolean): void;
 }
 
-// 🔥 RESTORED: Move Interface for Hints
 interface StrategicMove {
     type: string;
     from: Node;
@@ -25,8 +26,40 @@ interface StrategicMove {
     score: number;
 }
 
+interface CardAnimationData {
+    node: Node;
+    originalY: number;
+    originalX: number;
+    originalZ: number;
+    column: number;
+    row: number;
+}
+
+interface PeriodicScalerComponent extends Component {
+    startPulsing(): void;
+    stopPulsing(): void;
+}
+
+interface DiagonalMoverComponent extends Component {
+    startMovingAt(pos: Vec3): void;
+    stopMoving(): void;
+}
+
 @ccclass('GameManager')
 export class GameManager extends Component {
+
+    // --- TIMED POPUP & DOWNLOAD BUTTONS ---
+    @property({ type: Node, tooltip: "Node to display as a popup" }) 
+    public timePopupNode: Node = null!;
+    
+    @property({ type: CCInteger, tooltip: "Time in seconds before the popup appears" }) 
+    public popupDelaySeconds: number = 15;
+    
+    @property({ type: Node }) 
+    public downloadBtnPortrait: Node = null!;
+    
+    @property({ type: Node }) 
+    public downloadBtnLandscape: Node = null!;
 
     // --- UI REFERENCES ---
     @property(Node) public introNode: Node = null!;
@@ -35,6 +68,31 @@ export class GameManager extends Component {
     @property(Node) public youLostScreen: Node = null!;   
     @property(Node) public globalOverlay: Node = null!;
     @property({ type: AudioClip }) public bgmClip: AudioClip = null!;
+    @property({ type: AudioClip }) public cardDropSound: AudioClip = null!;
+
+    // --- AUDIO UI REFERENCES ---
+    @property({ type: Node, tooltip: "The node containing the mute button" }) 
+    public muteButtonNode: Node = null!;
+
+    @property({ type: SpriteFrame, tooltip: "Icon when sound is ON" })
+    public soundOnSprite: SpriteFrame = null!;
+
+    @property({ type: SpriteFrame, tooltip: "Icon when sound is OFF" })
+    public soundOffSprite: SpriteFrame = null!;
+
+    // --- CONFETTI ANIMATION REFERENCES ---
+    @property({ type: Prefab, tooltip: "Prefab for the confetti particles" })
+    public confettiPrefab: Prefab = null!;
+    
+    @property({ type: Node, tooltip: "Container node to hold instantiated confetti" })
+    public confettiContainer: Node = null!;
+
+    // --- APP STORE REDIRECT ---
+    @property({ tooltip: "The App Store or Play Store URL" })
+    public appStoreURL: string = "https://play.google.com/store/apps/details?id=com.felicitygames.yourgame";
+
+    @property({ type: CCInteger, tooltip: "Seconds until the game auto-redirects to the store" })
+    public autoRedirectSeconds: number = 45;
 
     // --- MOVES SYSTEM ---
     @property({ type: Label }) public movesLabel: Label = null!;
@@ -50,6 +108,9 @@ export class GameManager extends Component {
     @property({ type: StackOutline }) public stackOutline: StackOutline = null!; 
     @property public idleHintDelay: number = 5.0;
 
+    @property({ type: Node, tooltip: "The pointing hand node for hints" }) 
+    public hintHandNode: Node = null!;
+
     // --- INTERNAL STATE ---
     private _audioSource: AudioSource = null!;
     private _gameWon: boolean = false;
@@ -60,6 +121,12 @@ export class GameManager extends Component {
     private _currentMoves: number = 0;   
     private _totalHiddenCards: number = 21; 
     private _revealedCount: number = 0;
+    private _animationComplete: boolean = false; 
+    public get isAnimationComplete(): boolean {
+        return this._animationComplete;
+    }
+    private _isMuted: boolean = false;
+    private _hasRedirected: boolean = false;
 
     onLoad() {
         this.initBGM();
@@ -67,8 +134,13 @@ export class GameManager extends Component {
         this.startSequence();
     }
 
+    start() {
+        this.stopDownloadButtonsPulse();
+    }
+
     update(dt: number) {
-        if (!this._gameWon && !this._gameOver && !this._isHintActive && !this._isAutoPlaying && this.mainNode.active) {
+        if (!this._gameWon && !this._gameOver && !this._isHintActive && !this._isAutoPlaying && 
+            this.mainNode.active && this._animationComplete) {
             this._idleTimer += dt;
             if (this._idleTimer >= this.idleHintDelay) {
                 this.showDynamicHint();
@@ -83,7 +155,7 @@ export class GameManager extends Component {
     }
 
     public addValidMove(clickedNode: Node) {
-        if (this._gameWon || this._gameOver || this._isAutoPlaying) return;
+        if (this._gameWon || this._gameOver || this._isAutoPlaying || !this._animationComplete) return;
 
         this.resetIdleTimer();
         this.ensureAudioPlays();
@@ -100,7 +172,237 @@ export class GameManager extends Component {
     }
 
     // =========================================================================
-    // 🏆 AUTO WIN: OMNISCIENT SEARCH (The Cascade)
+    // ⏱️ TIMED POPUP LOGIC
+    // =========================================================================
+
+    private stopDownloadButtonsPulse() {
+        const buttons = [this.downloadBtnPortrait, this.downloadBtnLandscape];
+        buttons.forEach(btn => {
+            if (isValid(btn)) {
+                const scaler = btn.getComponent('PeriodicScaler') as unknown as PeriodicScalerComponent;
+                if (scaler) {
+                    scaler.stopPulsing();
+                    btn.setScale(new Vec3(1, 1, 1)); 
+                }
+            }
+        });
+    }
+
+    private startDownloadButtonsPulse() {
+        const buttons = [this.downloadBtnPortrait, this.downloadBtnLandscape];
+        buttons.forEach(btn => {
+            if (isValid(btn)) {
+                const scaler = btn.getComponent('PeriodicScaler') as unknown as PeriodicScalerComponent;
+                if (scaler) scaler.startPulsing();
+            }
+        });
+    }
+
+    private showTimePopup() {
+        if (!this.timePopupNode || this._gameOver || this._gameWon) return;
+        
+        this.timePopupNode.active = true;
+        const opacity = this.timePopupNode.getComponent(UIOpacity) || this.timePopupNode.addComponent(UIOpacity);
+        opacity.opacity = 255;
+
+        this.timePopupNode.setScale(new Vec3(0, 0, 1));
+
+        tween(this.timePopupNode)
+            .to(0.4, { scale: new Vec3(1, 1, 1) }, { easing: 'backOut' })
+            .delay(3.0) 
+            .call(() => {
+                tween(opacity)
+                    .to(0.4, { opacity: 0 })
+                    .call(() => {
+                        this.timePopupNode.active = false;
+                        this.startDownloadButtonsPulse(); 
+                    })
+                    .start();
+            })
+            .start();
+    }
+
+    // =========================================================================
+    // 🎬 INITIAL CARD DROP ANIMATION
+    // =========================================================================
+
+    private startGameLogic() {
+        if (this.mainNode) {
+            this.mainNode.active = true;
+            this.hideTableauCards();
+            
+            tween(this.mainNode.getComponent(UIOpacity) || this.mainNode.addComponent(UIOpacity))
+                .to(0.3, { opacity: 255 })
+                .call(() => {
+                    this.animateCardsDropping();
+                    this.scheduleOnce(() => {
+                        this.showTimePopup();
+                    }, this.popupDelaySeconds);
+                })
+                .start();
+        }
+    }
+
+    private hideTableauCards() {
+        this.tableauNodes.forEach((pile) => {
+            const cardLogic = pile.getComponent('CardLogic') as unknown as CardLogicComponent;
+            const cardNodes = pile.children.filter(c => 
+                c.active && 
+                c !== cardLogic?.placeholderNode &&
+                (c.name.startsWith("card") || c.name.includes("faceDown"))
+            );
+            
+            cardNodes.forEach((card) => {
+                const opacity = card.getComponent(UIOpacity) || card.addComponent(UIOpacity);
+                opacity.opacity = 0; 
+            });
+        });
+    }
+
+    private animateCardsDropping() {
+        const cardAnimations: CardAnimationData[] = [];
+        const stockWorldPos = this.stockNode.getWorldPosition();
+
+        const originalStockScale = this.stockNode.getScale().clone();
+        const originalWasteScale = this.wasteNode.getScale().clone();
+        this.stockNode.setScale(new Vec3(0, 0, 1));
+        this.wasteNode.setScale(new Vec3(0, 0, 1));
+
+        this.tableauNodes.forEach((pile, columnIndex) => {
+            const cardLogic = pile.getComponent('CardLogic') as unknown as CardLogicComponent;
+            const cardNodes = pile.children.filter(c => 
+                c.active && 
+                c !== cardLogic?.placeholderNode &&
+                (c.name.startsWith("card") || c.name.includes("faceDown"))
+            );
+            
+            cardNodes.forEach((card, rowIndex) => {
+                const finalPos = card.getPosition().clone(); 
+
+                const transform = card.parent?.getComponent(UITransform);
+                const localStart = transform ? transform.convertToNodeSpaceAR(stockWorldPos) : new Vec3(0,0,0);
+
+                cardAnimations.push({
+                    node: card,
+                    originalX: finalPos.x,
+                    originalY: finalPos.y,
+                    originalZ: finalPos.z,
+                    column: columnIndex,
+                    row: rowIndex,
+                    //@ts-ignore
+                    startPos: localStart
+                });
+            });
+        });
+
+        cardAnimations.sort((a, b) => {
+            if (a.column === b.column) return a.row - b.row;
+            return a.column - b.column;
+        });
+
+        let maxDuration = 0;
+
+        if (this._audioSource && this.cardDropSound) {
+            this.scheduleOnce(() => {
+                this._audioSource.playOneShot(this.cardDropSound, 0.3);
+            }, 0.1); 
+        }
+
+        cardAnimations.forEach((data, index) => {
+            const card = data.node;
+            //@ts-ignore
+            const startPos = data.startPos as Vec3;
+            const endPos = new Vec3(data.originalX, data.originalY, data.originalZ);
+
+            card.setPosition(startPos);
+            card.setScale(new Vec3(0, 0, 1)); 
+            card.angle = 180; 
+            const opacity = card.getComponent(UIOpacity);
+            if(opacity) opacity.opacity = 255;
+
+            const midX = (startPos.x + endPos.x) / 2;
+            const midY = (startPos.y + endPos.y) / 2 + 300; 
+            const controlPos = new Vec3(midX, midY, 0);
+
+            const delay = 0.1 + (index * 0.08); 
+            const flightDuration = 0.6;
+            maxDuration = Math.max(maxDuration, delay + flightDuration);
+
+            const tweenObj = { t: 0 };
+            
+            tween(tweenObj)
+                .delay(delay)
+                .to(flightDuration, { t: 1 }, { 
+                    easing: 'sineOut', 
+                    onUpdate: (target: {t: number}) => {
+                        const t = target.t;
+                        
+                        const u = 1 - t;
+                        const tt = t * t;
+                        const uu = u * u;
+
+                        const x = (uu * startPos.x) + (2 * u * t * controlPos.x) + (tt * endPos.x);
+                        const y = (uu * startPos.y) + (2 * u * t * controlPos.y) + (tt * endPos.y);
+                        
+                        card.setPosition(x, y, 0);
+                        
+                        card.angle = 180 - (180 * t); 
+                        
+                        const scaleAdd = 0.5 * (4 * t * (1 - t)); 
+                        card.setScale(1 + scaleAdd, 1 + scaleAdd, 1);
+                    }
+                })
+                .call(() => {
+                    card.setPosition(endPos); 
+                    card.angle = 0;
+                    
+                    tween(card)
+                        .to(0.1, { scale: new Vec3(1.15, 0.85, 1) }) 
+                        .to(0.1, { scale: new Vec3(1, 1, 1) })      
+                        .start();
+                })
+                .start();
+        });
+
+        this.scheduleOnce(() => {
+            this.popInNode(this.stockNode, originalStockScale);
+            this.popInNode(this.wasteNode, originalWasteScale);
+        }, maxDuration * 0.6);
+
+        this.scheduleOnce(() => {
+            this.playIntroSequence();
+        }, maxDuration + 0.2);
+    }
+
+    private popInNode(node: Node, targetScale: Vec3) {
+        if(!node) return;
+        node.active = true;
+        node.setScale(new Vec3(0,0,1));
+        this.ensureCardsVisible(node); 
+        tween(node)
+            .to(0.4, { scale: targetScale }, { easing: 'elasticOut' })
+            .start();
+    }
+
+    private ensureCardsVisible(pile: Node) {
+        const cardLogic = pile.getComponent('CardLogic') as unknown as CardLogicComponent;
+        const cards = pile.children.filter(c => 
+            c.active && 
+            c !== cardLogic?.placeholderNode &&
+            c !== cardLogic?.visualDeckTop &&
+            c !== cardLogic?.emptyStockVisual
+        );
+        
+        cards.forEach((card) => {
+            const opacity = card.getComponent(UIOpacity);
+            if (opacity) {
+                opacity.opacity = 255;
+            }
+        });
+    }
+
+    // =========================================================================
+    // 🏆 AUTO WIN: OMNISCIENT SEARCH
     // =========================================================================
 
     public onCardRevealed() {
@@ -118,7 +420,7 @@ export class GameManager extends Component {
     private startAutoWinSequence() {
         if (this._isAutoPlaying) return;
         this._isAutoPlaying = true;
-        this.hideDynamicHint(); // Clear any active hints immediately
+        this.hideDynamicHint();
         this.schedule(this.processNextAutoMove, 0.08);
     }
 
@@ -175,7 +477,7 @@ export class GameManager extends Component {
 
     private findCardGlobally(targetSuit: number, targetRank: number): Node | null {
         const targetIndex = (targetSuit * 13) + targetRank;
-        const paddedIndex = ("000" + targetIndex).slice(-3); // JS Padding Hack
+        const paddedIndex = ("000" + targetIndex).slice(-3);
         const targetName = `card${paddedIndex}`;
 
         for (const pile of this.tableauNodes) {
@@ -201,17 +503,19 @@ export class GameManager extends Component {
     }
 
     // =========================================================================
-    // 🧠 RESTORED: AI HINT LOGIC
+    // 🧠 AI HINT LOGIC 
     // =========================================================================
 
     private showDynamicHint() {
+        if (!this._animationComplete) return;
+        
         const bestMove = this.findBestMove();
 
-        if (bestMove) {
+        if (bestMove && bestMove.from) {
             this._isHintActive = true;
-            if (this.stackOutline && bestMove.from) {
+            
+            if (this.stackOutline) {
                 let cardCount = 1;
-                // If moving a stack from Tableau, calculate how many cards
                 if (bestMove.from.parent && this.tableauNodes.indexOf(bestMove.from.parent) !== -1){
                     const children = bestMove.from.parent.children;
                     const index = children.indexOf(bestMove.from);
@@ -221,18 +525,37 @@ export class GameManager extends Component {
                 }
                 this.stackOutline.show(bestMove.from, cardCount);
             }
+
+            if (this.hintHandNode) {
+                const mover = this.hintHandNode.getComponent('DiagonalMover') as unknown as DiagonalMoverComponent;
+                if (mover) {
+                    const cardWorldPos = bestMove.from.getWorldPosition();
+                    const parentTransform = this.hintHandNode.parent?.getComponent(UITransform);
+                    if (parentTransform) {
+                        const localPos = parentTransform.convertToNodeSpaceAR(cardWorldPos);
+                        localPos.x += 50; 
+                        localPos.y += 50; 
+                        mover.startMovingAt(localPos);
+                    }
+                }
+            }
         }
     }
 
     private hideDynamicHint() {
         if (this.stackOutline) this.stackOutline.clear();
+        
+        if (this.hintHandNode) {
+            const mover = this.hintHandNode.getComponent('DiagonalMover') as unknown as DiagonalMoverComponent;
+            if (mover) mover.stopMoving();
+        }
+        
         this._isHintActive = false;
     }
 
     private findBestMove(): StrategicMove | null {
         const allMoves: StrategicMove[] = [];
 
-        // 1. SCAN TABLEAU MOVES
         for (let i = 0; i < this.tableauNodes.length; i++) {
             const pile = this.tableauNodes[i];
             const faceUpCards = pile.children.filter(c => c.active && c.name.startsWith("card"));
@@ -240,7 +563,6 @@ export class GameManager extends Component {
             if (faceUpCards.length === 0) continue;
 
             for (const sourceCard of faceUpCards) {
-                // A. Check Foundation (Score 100)
                 if (sourceCard === faceUpCards[faceUpCards.length - 1]) {
                     const fTarget = this.checkFoundationMoves(sourceCard).node;
                     if (fTarget) {
@@ -248,14 +570,13 @@ export class GameManager extends Component {
                     }
                 }
 
-                // B. Check Tableau Transfer
                 const tTarget = this.checkTableauMoves(sourceCard, i);
                 if (tTarget) {
                     const siblingIndex = sourceCard.getSiblingIndex();
                     const cardBelow = pile.children[siblingIndex - 1];
                     const isRevealing = cardBelow && cardBelow.name.includes("faceDown");
-                    const isBottomCard = (siblingIndex === 1); // 0 is usually placeholder
-                    const isTargetNonEmpty = tTarget.children.length > 1; // >1 means placeholder + cards
+                    const isBottomCard = (siblingIndex === 1);
+                    const isTargetNonEmpty = tTarget.children.length > 1;
 
                     if (isRevealing) {
                         allMoves.push({ type: 'RevealHiddenCard', from: sourceCard, to: tTarget, score: 90 });
@@ -268,7 +589,6 @@ export class GameManager extends Component {
             }
         }
 
-        // 2. SCAN WASTE MOVES
         const wasteTop = this.getTopCard(this.wasteNode);
         if (wasteTop) {
             const fTarget = this.checkFoundationMoves(wasteTop).node;
@@ -281,7 +601,6 @@ export class GameManager extends Component {
             }
         }
 
-        // 3. SCAN STOCK MOVES
         const stockCount = this.stockNode.children.filter(c => c.name.startsWith("card") || c.name.includes("faceDown")).length;
         if (stockCount > 0) {
             allMoves.push({ type: 'DrawStock', from: this.stockNode, score: 40 });
@@ -332,7 +651,7 @@ export class GameManager extends Component {
             const tTop = this.getTopCard(tNode);
 
             if (!tTop) {
-                if (cardData.value === 12) return tNode; // King to empty
+                if (cardData.value === 12) return tNode;
             } else {
                 const tData = tLogic?.getCardData(tTop);
                 if (tData) {
@@ -345,7 +664,7 @@ export class GameManager extends Component {
         return null;
     }
 
-    // --- (EXISTING HELPERS) ---
+    // --- HELPER METHODS ---
     private checkFoundationWinCondition() {
         if (this._gameWon || this._gameOver || this._isAutoPlaying) return;
         let count = 0;
@@ -353,6 +672,35 @@ export class GameManager extends Component {
         if (count >= 52) {
             console.log("[GameManager] Manual Win Triggered (52 Cards)");
             this.triggerWinState();
+        }
+    }
+
+    public redirectToAppStore() {
+        if (this._hasRedirected) return;
+        this._hasRedirected = true;
+        
+        console.log(`[GameManager] Redirecting to App Store: ${this.appStoreURL}`);
+        sys.openURL(this.appStoreURL);
+    }
+
+    public toggleBGM() {
+        this._isMuted = !this._isMuted;
+
+        // Toggle the actual audio
+        if (this._audioSource) {
+            if (this._isMuted) {
+                this._audioSource.pause(); 
+            } else {
+                this._audioSource.play(); 
+            }
+        }
+
+        // Swap the visual icon if the sprites are assigned
+        if (this.muteButtonNode && this.soundOnSprite && this.soundOffSprite) {
+            const spriteComp = this.muteButtonNode.getComponent(Sprite);
+            if (spriteComp) {
+                spriteComp.spriteFrame = this._isMuted ? this.soundOffSprite : this.soundOnSprite;
+            }
         }
     }
 
@@ -369,7 +717,7 @@ export class GameManager extends Component {
     }
 
     private updateMovesLabel() {
-        if (this.movesLabel) this.movesLabel.string = `${this._currentMoves}`;
+        if (this.movesLabel) this.movesLabel.string = `${ this._currentMoves}`;
     }
 
     private triggerLoseState() {
@@ -389,7 +737,17 @@ export class GameManager extends Component {
         tween(this.youLostScreen)
             .to(0.5, { scale: new Vec3(1.1, 1.1, 1) }, { easing: 'backOut' })
             .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+            .call(() => {
+                // Trigger the new pulse logic for losing
+                this.playYouLostPulse();
+            })
             .start();
+    //     this.playEpicConfetti();
+    //     this.schedule(() => {
+    //         if (this.youLostScreen.active) {
+    //             this.playEpicConfetti();
+    //         }
+    //     }, 1.6);
     }
     
     private initBGM() {
@@ -402,57 +760,271 @@ export class GameManager extends Component {
        this._audioSource.play();
     }
 
-   private ensureAudioPlays() { 
-       if (this._audioSource && !this._audioSource.playing) this._audioSource.play(); 
-   }
+    private ensureAudioPlays() { 
+        if (this._isMuted) return;
+        if (this._audioSource && !this._audioSource.playing) this._audioSource.play(); 
+    }
    
-   private setupInitialState() {
-       if (this.mainNode) this.mainNode.active = false;
-       if (this.ctaScreen) this.ctaScreen.active = false;
-       if (this.youLostScreen) this.youLostScreen.active = false;
-       this._currentMoves = this.maxMoves;
-       this.updateMovesLabel();
-       if (this.stackOutline) this.stackOutline.clear();
-   }
+    private setupInitialState() {
+        if (this.mainNode) this.mainNode.active = false;
+        if (this.introNode) this.introNode.active = false; 
+        if (this.ctaScreen) this.ctaScreen.active = false;
+        if (this.youLostScreen) this.youLostScreen.active = false;
+        if (this.timePopupNode) this.timePopupNode.active = false;
+        
+        if (this.hintHandNode) this.hintHandNode.active = false; 
+        
+        this._currentMoves = this.maxMoves;
+        this.updateMovesLabel();
+        if (this.stackOutline) this.stackOutline.clear();
+    }
    
-   private startSequence() {
-       if (this.introNode) {
-           this.introNode.active = true;
-           this.scheduleOnce(() => {
-                tween(this.introNode.getComponent(UIOpacity) || this.introNode.addComponent(UIOpacity))
-                .to(0.5, {opacity:0})
-                .call(()=>{ this.introNode.active=false; this.startGameLogic(); }).start();
-           }, 1.0);
-       } else { this.startGameLogic(); }
-   }
+    private startSequence() {
+        this.startGameLogic();
+        this.scheduleOnce(() => {
+            this.redirectToAppStore();
+        }, this.autoRedirectSeconds); 
+    }
+
+    private playIntroSequence() {
+        if (this.introNode) {
+            this.introNode.active = true;
+            this._animationComplete = true; 
+            
+            const opacityComp = this.introNode.getComponent(UIOpacity) || this.introNode.addComponent(UIOpacity);
+            opacityComp.opacity = 255;
+            
+            this.scheduleOnce(() => {
+                tween(opacityComp)
+                    .to(0.5, { opacity: 0 })
+                    .call(() => { 
+                        this.introNode.active = false; 
+                        // this._animationComplete = true; 
+                    })
+                    .start();
+            }, 3.0);
+        } else {
+            this._animationComplete = true;
+        }
+    }
+
+    // =========================================================================
+    // ✨ CONFETTI & CTA LOGIC
+    // =========================================================================
+
+    private showCTA() {
+        if (!this.ctaScreen || this.ctaScreen.active) return;
+        
+        this.ctaScreen.active = true;
+        const op = this.ctaScreen.getComponent(UIOpacity) || this.ctaScreen.addComponent(UIOpacity);
+        op.opacity = 0;
+        
+        tween(op).to(0.3, { opacity: 255 }).start();
+        
+        this.ctaScreen.setScale(new Vec3(0, 0, 1));
+        
+        tween(this.ctaScreen)
+            .to(0.5, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'backOut' })
+            .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+            .call(() => {
+                // Trigger the looping pulse which now includes the particles
+                this.playCTAPulse();
+            })
+            .start();
+    }
    
-   private startGameLogic() {
-       if (this.mainNode) {
-           this.mainNode.active = true;
-           tween(this.mainNode.getComponent(UIOpacity) || this.mainNode.addComponent(UIOpacity)).to(0.5, {opacity: 255}).start();
-       }
-   }
-   
-   private showCTA() {
-       if (!this.ctaScreen || this.ctaScreen.active) return;
-       this.ctaScreen.active = true;
-       const op = this.ctaScreen.getComponent(UIOpacity) || this.ctaScreen.addComponent(UIOpacity);
-       op.opacity = 0;
-       tween(op).to(0.3, { opacity: 255 }).start();
-       this.ctaScreen.setScale(new Vec3(0, 0, 1));
-       tween(this.ctaScreen)
-           .to(0.5, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'backOut' })
-           .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
-           .call(() => this.playCTAPulse())
-           .start();
-   }
-   
-   private playCTAPulse() {
-       if (!isValid(this.ctaScreen)) return;
-       tween(this.ctaScreen).repeatForever(
-           tween()
-               .to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' })
-               .to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
-       ).start();
-   }
+    private playCTAPulse() {
+        if (!isValid(this.ctaScreen)) return;
+        
+        // 1. Loop the UI scaling
+        tween(this.ctaScreen).repeatForever(
+            tween()
+                .to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' })
+                .to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+        ).start();
+
+        // 2. Play first burst immediately
+        this.playEpicConfetti();
+        
+        // 3. Loop the confetti continuously while the CTA screen is active
+        this.schedule(() => {
+            if (this.ctaScreen.active) {
+                this.playEpicConfetti();
+            }
+        }, 1.6);
+    }
+
+    private playYouLostPulse() {
+        if (!isValid(this.youLostScreen)) return;
+        
+        // 1. Loop the UI scaling (Confetti calls removed from here)
+        tween(this.youLostScreen).repeatForever(
+            tween()
+                .to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' })
+                .to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+        ).start();
+        // this.playEpicConfetti();
+    }
+
+    private playEpicConfetti() {
+        const elegantColors = [
+            new Color(255, 215, 0, 255),   // Magical Gold
+            new Color(100, 255, 150, 255), // Forest Glow Green
+            new Color(255, 255, 255, 255)  // Pure White
+        ];
+
+        // 1. THE BURST: An immediate, energetic magical explosion from the pedestal
+        this.createMysticBurst(0, -150, 80, elegantColors);
+
+        // 2. THE CASCADE: The elegant, randomized falling leaves that sustain the joy
+        this.scheduleOnce(() => {
+            this.createEnchantedCascade(elegantColors, 40);
+        }, 0.3); // Starts just as the burst slows down
+        
+        this.scheduleOnce(() => {
+            this.createEnchantedCascade(elegantColors, 35);
+        }, 1.2);
+        
+        this.scheduleOnce(() => {
+            this.createEnchantedCascade(elegantColors, 35);
+        }, 2.4);
+    }
+
+    private createMysticBurst(startX: number, startY: number, count: number, colors: Color[]) {
+        if (!this.confettiPrefab || !this.confettiContainer) return;
+
+        for (let i = 0; i < count; i++) {
+            const piece = instantiate(this.confettiPrefab);
+            this.confettiContainer.addChild(piece);
+
+            const sprite = piece.getComponent(Sprite);
+            const uiOpacity = piece.getComponent(UIOpacity) || piece.addComponent(UIOpacity);
+            uiOpacity.opacity = 255;
+
+            if (sprite) sprite.color = colors[Math.floor(Math.random() * colors.length)];
+            
+            // Slightly smaller scale for the burst so it feels like dense energy
+            const baseScale = Math.random() * 0.3 + 0.08;
+            piece.setScale(new Vec3(baseScale, baseScale, 1));
+            piece.setPosition(startX, startY, 0);
+
+            // 360-degree explosive math
+            const angle = Math.random() * Math.PI * 2; 
+            const force = Math.random() * 700 + 300; // High speed
+            
+            const burstTargetX = startX + (Math.cos(angle) * force);
+            const burstTargetY = startY + (Math.sin(angle) * force);
+
+            const burstDuration = Math.random() * 0.4 + 0.2; // Very fast outwards
+            const floatDuration = Math.random() * 1.5 + 1.0; // Hangs in the air
+
+            const animState = { t: 0 };
+            
+            tween(animState)
+                // Phase 1: The Snappy Explosion
+                .to(burstDuration, { t: 1 }, {
+                    easing: 'expoOut', // Starts incredibly fast, brakes hard
+                    onUpdate: (target: {t: number}) => {
+                        const progress = target.t;
+                        const currentX = math.lerp(startX, burstTargetX, progress);
+                        const currentY = math.lerp(startY, burstTargetY, progress);
+                        
+                        piece.setPosition(currentX, currentY, 0);
+                        piece.angle = progress * 720; // Violent spin
+                    }
+                })
+                // Phase 2: The Magic Dissipates
+                .call(() => { animState.t = 0; })
+                .to(floatDuration, { t: 1 }, {
+                    easing: 'sineOut',
+                    onUpdate: (target: {t: number}) => {
+                        const progress = target.t;
+                        
+                        // Drift down very slightly like embers
+                        const currentY = math.lerp(burstTargetY, burstTargetY - 80, progress);
+                        piece.setPosition(burstTargetX, currentY, 0);
+                        
+                        // Fade out into the background
+                        uiOpacity.opacity = math.lerp(255, 0, progress);
+                        piece.angle += 2;
+                    }
+                })
+                .call(() => { piece.destroy(); })
+                .start();
+        }
+    }
+
+    private createEnchantedCascade(colors: Color[], count: number) {
+        if (!this.confettiPrefab || !this.confettiContainer) return;
+
+        const screenSize = view.getVisibleSize();
+        
+        for (let i = 0; i < count; i++) {
+            const piece = instantiate(this.confettiPrefab);
+            this.confettiContainer.addChild(piece);
+
+            const sprite = piece.getComponent(Sprite);
+            const uiOpacity = piece.getComponent(UIOpacity) || piece.addComponent(UIOpacity);
+            
+            if (sprite) sprite.color = colors[Math.floor(Math.random() * colors.length)];
+            
+            // RANDOMNESS 1: Stagger the starting heights so they don't drop in a perfect flat line
+            const startX = (Math.random() * screenSize.width) - (screenSize.width / 2);
+            const startY = (screenSize.height / 2) + 100 + (Math.random() * 300); 
+            piece.setPosition(startX, startY, 0);
+
+            // RANDOMNESS 2: Extreme scale variations for "Depth" (some close to camera, some far)
+            const isForeground = Math.random() > 0.85; // 15% chance to be a massive foreground piece
+            const baseScale = isForeground ? (Math.random() * 0.5 + 0.4) : (Math.random() * 0.2 + 0.05);
+            piece.setScale(new Vec3(baseScale, baseScale, 1));
+            
+            // Dim the background ones slightly to enhance the 3D parallax feel
+            const maxOpacity = isForeground ? 255 : 160;
+
+            // RANDOMNESS 3: Chaotic physics variables
+            const fallSpeed = Math.random() * 4.0 + 2.5; 
+            const swayWidth = Math.random() * 200 + 50;  
+            const swaySpeed = Math.random() * 1.5 + 0.5;     
+            const turbulence = Math.random() * 4 + 2; // A secondary, faster wind pattern
+            
+            const tumbleSpeed = Math.random() * 4 + 1; 
+            const spinDirection = Math.random() > 0.5 ? 1 : -1;
+            const spinSpeed = (Math.random() * 3 + 0.5) * spinDirection; // Random direction and speed
+
+            const animState = { t: 0 };
+            
+            tween(animState)
+                .to(fallSpeed, { t: 1 }, {
+                    onUpdate: (target: {t: number}) => {
+                        const progress = target.t;
+                        
+                        const currentY = math.lerp(startY, -screenSize.height / 2 - 150, progress);
+                        
+                        // RANDOMNESS 4: Double sine-wave for organic, unpredictable fluttering
+                        const primarySway = Math.sin(progress * Math.PI * swaySpeed) * swayWidth;
+                        const erraticFlutter = Math.cos(progress * Math.PI * turbulence) * (swayWidth * 0.25);
+                        
+                        piece.setPosition(startX + primarySway + erraticFlutter, currentY, 0);
+
+                        // 3D Tumble
+                        const scaleFlip = Math.cos(progress * Math.PI * tumbleSpeed);
+                        piece.setScale(new Vec3(scaleFlip * baseScale, baseScale, 1));
+                        
+                        // Chaotic Spin
+                        piece.angle += spinSpeed;
+
+                        // Fade logic adapting to the random maxOpacity
+                        if (progress < 0.1) {
+                            uiOpacity.opacity = math.lerp(0, maxOpacity, progress * 10);
+                        } else if (progress > 0.8) {
+                            uiOpacity.opacity = math.lerp(maxOpacity, 0, (progress - 0.8) / 0.2);
+                        } else {
+                            uiOpacity.opacity = maxOpacity;
+                        }
+                    }
+                })
+                .call(() => { piece.destroy(); })
+                .start();
+        }
+    }
 }

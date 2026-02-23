@@ -9,7 +9,8 @@ export class StackOutline extends Component {
 
     // Constants 
     private readonly CARD_HEIGHT = 230;
-    private readonly STACK_OFFSET = 70; 
+    private readonly STACK_OFFSET = 78; 
+    
 
     onLoad() {
         // Ensure it starts hidden
@@ -27,10 +28,12 @@ export class StackOutline extends Component {
         // 2. Calculate Height required
         // Height = One Card + (Overlaps * (Cards - 1))
         const totalHeight = this.CARD_HEIGHT + ((numberOfCards - 1) * this.STACK_OFFSET);
+        // const width =160
 
         // 3. Set Size (Modify the Sliced Sprite height)
         const ui = this.outlineNode.getComponent(UITransform);
         if (ui) {
+            console.log(ui.width)
             ui.setContentSize(ui.width, totalHeight);
         }
 

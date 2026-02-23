@@ -12,7 +12,16 @@ export class ResolutionManager extends Component {
     landscapeLogo: Node = null!; 
 
     @property(Node)
-    portraitUI: Node = null!;   
+    portraitAppLogo: Node = null!; 
+
+    @property(Node)
+    landscapeAppLogo: Node = null!; 
+
+    @property(Node)
+    portraitUI: Node = null!;
+
+    @property(Node)
+    portraitDownload: Node = null!; 
     
     @property(Node)
     landscapeUI: Node = null!;  
@@ -43,14 +52,20 @@ export class ResolutionManager extends Component {
         if (isLandscape) {
             if (this.landscapeLogo) this.landscapeLogo.active = true;
             if (this.landscapeUI) this.landscapeUI.active = true;
+            if (this.landscapeAppLogo) this.landscapeAppLogo.active = true;
             if (this.portraitLogo) this.portraitLogo.active = false;
             if (this.portraitUI) this.portraitUI.active = false;
+            if(this.portraitDownload) this.portraitDownload.active =false;
+            if (this.portraitAppLogo) this.portraitAppLogo.active = false;
             console.log("Switched to Landscape UI");
         } else {
             if (this.portraitLogo) this.portraitLogo.active = true;
             if (this.portraitUI) this.portraitUI.active = true;
+            if (this.portraitAppLogo) this.portraitAppLogo.active = true;
+            if (this.portraitDownload) this.portraitDownload.active = true;
             if (this.landscapeLogo) this.landscapeLogo.active = false;
             if (this.landscapeUI) this.landscapeUI.active = false;
+            if (this.landscapeAppLogo) this.landscapeAppLogo.active = false;
             console.log("Switched to Portrait UI");
         }
         

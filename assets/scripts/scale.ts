@@ -3,6 +3,8 @@ const { ccclass, property } = _decorator;
 
 @ccclass('PeriodicScaler')
 export class PeriodicScaler extends Component {
+    @property
+    public targetUrl: string = "https://play.google.com/store/apps/details?id=nova.solitaire.patience.card.games.klondike.free"; 
 
     @property
     public targetScale: number = 1.1; // The size it grows to (1.1 = 110%)
@@ -16,8 +18,14 @@ export class PeriodicScaler extends Component {
         // Store the original scale so we always return to it
         this._initialScale = this.node.getScale();
         this.startPulsing();
+        this.node.on(Node.EventType.TOUCH_START, this.onButtonClick, this);
     }
-
+    private onButtonClick() {
+        console.log(`[CTARedirect] Opening URL: ${this.targetUrl}`);
+        
+        // Open the URL in a new tab
+        window.open(this.targetUrl, '_blank');
+    }
     private startPulsing() {
         const bigScale = new Vec3(
             this._initialScale.x * this.targetScale,

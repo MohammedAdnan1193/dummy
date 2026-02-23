@@ -78,12 +78,24 @@ export class CardLogic extends Component {
         this.updatePlaceholderVisibility();
     }
 
+    update(dt: number) {
+        // If the user is currently dragging a card, continuously reset the hint timer
+        if (this._isDragging && this.gameManager) {
+            this.gameManager.resetIdleTimer();
+        }
+    }
+
     // =========================================================================
     // ✋ TOUCH & DRAG LOGIC (UX ENHANCED)
     // =========================================================================
 
     onTouchStart(event: EventTouch) {
-        if (this.gameManager) this.gameManager.resetIdleTimer();
+        if (this.gameManager) {
+            // 🔒 NEW LOCK: Ignore all touches if the intro drop animation is still running
+            if (!this.gameManager.isAnimationComplete) return;
+            
+            this.gameManager.resetIdleTimer();
+        }
         if (this._isAnimating) return;
 
         if (this.holderType === HolderType.STOCK || this.holderType === HolderType.FOUNDATION) {
@@ -179,11 +191,13 @@ export class CardLogic extends Component {
     }
 
     onDragEnd(event: EventTouch) {
+
+        if (this.gameManager) this.gameManager.resetIdleTimer();
+        
         this.node.off(Node.EventType.TOUCH_MOVE, this.onDragMove, this);
         this.node.off(Node.EventType.TOUCH_END, this.onDragEnd, this);
         this.node.off(Node.EventType.TOUCH_CANCEL, this.onDragEnd, this);
         this._isDragging = false;
-        
         
         // 🌟 CLEAR HIGHLIGHTS
         if (this._activeHighlightTarget) {
@@ -250,7 +264,6 @@ export class CardLogic extends Component {
         }
     }
 
-    // 🌟 UX: Visual Feedback on the Target Pile
     // 🌟 UX: Visual Feedback on the Target Pile
     public setHighlightState(isActive: boolean) {
         // 1. Find the best target to animate (Top card or Placeholder)
@@ -369,6 +382,9 @@ export class CardLogic extends Component {
                 op.opacity = 255;
             });
             this.executeStackMove(this._draggedCards, bestTarget);
+            
+            // 🌟 FIX ADDED HERE: Clear the dragged cards array so subsequent actions don't try to use an old array state
+            this._draggedCards = []; 
         } else {
             this.returnCardsToOriginal();
         }
@@ -407,6 +423,9 @@ export class CardLogic extends Component {
 
     returnCardsToOriginal() {
         console.log("[CardLogic] ↩️ Drop invalid. Returning.");
+        // 🌟 FIX ADDED HERE: Lock the animation state so rapid inputs are ignored
+        this._isAnimating = true; 
+
         const overlayTrans = this.gameManager.globalOverlay.getComponent(UITransform);
         const parentTrans = this._originalParent.getComponent(UITransform);
 
@@ -423,7 +442,7 @@ export class CardLogic extends Component {
             tween(card)
                 .parallel(
                     tween().to(0.3, { position: overlayDest }, { easing: 'sineOut' }), 
-                    tween().to(0.3, { angle: 0 }, { easing: 'sineOut' }),             
+                    tween().to(0.3, { angle: 0 }, { easing: 'sineOut' }),            
                     tween().to(0.2, { scale: new Vec3(1, 1, 1) })                      
                 )
                 .call(() => {
@@ -458,6 +477,9 @@ export class CardLogic extends Component {
         });
 
         this._draggedCards = [];
+        
+        // 🌟 FIX ADDED HERE: Unlock the interaction state so the user can grab cards from this pile again
+        this._isAnimating = false; 
     }
 
     getCardUnderTouch(uiLoc: Vec2): Node | null {
@@ -548,7 +570,7 @@ export class CardLogic extends Component {
 
         if (stockCards.length > 0) {
             const topCard = stockCards[stockCards.length - 1];
-            this.playSFX(this.successSound);
+            // this.playSFX(this.successSound);
             this._isAnimating = true;
             topCard.setSiblingIndex(this.node.children.length - 1); 
 
@@ -657,7 +679,7 @@ export class CardLogic extends Component {
         if (this.gameManager) this.gameManager.addValidMove(this.node); 
 
         // =========================================================
-        // 1. STOCK DRAW LOGIC (Unchanged)
+        // 1. STOCK DRAW LOGIC
         // =========================================================
         if (this.holderType === HolderType.STOCK) {
             let completedCount = 0;
@@ -715,7 +737,12 @@ export class CardLogic extends Component {
                             target.updatePlaceholderVisibility();
                         }
                         completedCount++;
-                        if (completedCount === totalCount) if (onComplete) onComplete(); 
+                        if (completedCount === totalCount) {
+                            // 🌟 FIX: Trigger the success animation for Stock to Waste moves
+                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
+                            
+                            if (onComplete) onComplete(); 
+                        }
                     })
                     .start();
             });
@@ -723,7 +750,7 @@ export class CardLogic extends Component {
         }
 
         // =========================================================
-        // 2. STANDARD MOVE LOGIC (Fixed Reversal Issue)
+        // 2. STANDARD MOVE LOGIC
         // =========================================================
         const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
         const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
@@ -792,7 +819,6 @@ export class CardLogic extends Component {
 
                         completedCount++;
 
-                        // 🌟 FIX: Wait for ALL cards to land, then enforce order
                         if (completedCount === totalCards) {
                             
                             // Iterate through the original sorted list and force them to the top
@@ -997,7 +1023,13 @@ export class CardLogic extends Component {
         this.playSFX(this.successSound);
 
         const effectContainer = new Node('EffectContainer');
-        this.node.parent?.addChild(effectContainer); 
+        
+        // 🌟 FIX: Parent to globalOverlay so it doesn't hide behind the Tableau/Foundation
+        const topLayer = this.gameManager?.globalOverlay || this.node.parent;
+        if (topLayer) {
+            topLayer.addChild(effectContainer); 
+        }
+        
         effectContainer.setWorldPosition(targetNode.getWorldPosition());
 
         const ring = new Node('Ring');
