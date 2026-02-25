@@ -1,63 +1,81 @@
 import { _decorator, Component, view, ResolutionPolicy, Node, UITransform } from 'cc';
+import { GameManager } from './GameManager'; // 1. IMPORT GAMEMANAGER
 const { ccclass, property } = _decorator;
 
 @ccclass('ResolutionManager')
 export class ResolutionManager extends Component {
 
     @property(Node)
-    portraitLogo: Node = null!; // Drag your Portrait Logo here
+    portraitLogo: Node = null!; 
 
     @property(Node)
-    landscapeLogo: Node = null!; // Drag your Landscape Logo here
+    landscapeLogo: Node = null!; 
 
-    // You can add more groups if needed!
     @property(Node)
-    portraitUI: Node = null!;   // e.g., A container with portrait-specific buttons
+    portraitAppLogo: Node = null!; 
+
+    @property(Node)
+    landscapeAppLogo: Node = null!; 
+
+    @property(Node)
+    portraitUI: Node = null!;
+
+    @property(Node)
+    portraitDownload: Node = null!; 
     
     @property(Node)
-    landscapeUI: Node = null!;  // e.g., A container with landscape-specific buttons
+    landscapeUI: Node = null!;  
+
+    // 2. ADD PROPERTY TO CONNECT GAME MANAGER
+    @property(GameManager)
+    gameManager: GameManager = null!; 
 
     onLoad() {
+        // Use an arrow function to keep 'this' context safe
         view.setResizeCallback(() => this.updateLayout());
+        
+        // Initial setup
         this.updateLayout();
     }
 
     updateLayout() {
-        // 1. Get Screen Orientation
+        // --- EXISTING LOGIC ---
         const frameSize = view.getFrameSize();
         const isLandscape = frameSize.width > frameSize.height;
 
-        // 2. Resolution Logic (From previous step)
         if (isLandscape) {
             view.setDesignResolutionSize(1440, 720, ResolutionPolicy.FIXED_HEIGHT);
         } else {
             view.setDesignResolutionSize(720, 1440, ResolutionPolicy.FIXED_WIDTH);
         }
 
-        // 3. The Toggle Logic
         if (isLandscape) {
-            // Enable Landscape elements
             if (this.landscapeLogo) this.landscapeLogo.active = true;
             if (this.landscapeUI) this.landscapeUI.active = true;
-
-            // Disable Portrait elements
+            if (this.landscapeAppLogo) this.landscapeAppLogo.active = true;
             if (this.portraitLogo) this.portraitLogo.active = false;
             if (this.portraitUI) this.portraitUI.active = false;
-
+            if(this.portraitDownload) this.portraitDownload.active =false;
+            if (this.portraitAppLogo) this.portraitAppLogo.active = false;
             console.log("Switched to Landscape UI");
         } else {
-            // Enable Portrait elements
             if (this.portraitLogo) this.portraitLogo.active = true;
             if (this.portraitUI) this.portraitUI.active = true;
-
-            // Disable Landscape elements
+            if (this.portraitAppLogo) this.portraitAppLogo.active = true;
+            if (this.portraitDownload) this.portraitDownload.active = true;
             if (this.landscapeLogo) this.landscapeLogo.active = false;
             if (this.landscapeUI) this.landscapeUI.active = false;
-
+            if (this.landscapeAppLogo) this.landscapeAppLogo.active = false;
             console.log("Switched to Portrait UI");
         }
         
-        // Force update widget positions
         this.node.getComponent(UITransform)?.setContentSize(view.getVisibleSize());
+
+        // --- 3. NEW LOGIC: REFRESH GAME MANAGER ---
+        if (this.gameManager) {
+            console.log("[ResolutionManager] Layout changed -> Resetting Guide Timer");
+            // This clears the current hint arrow immediately and resets the 5s timer
+            this.gameManager.resetIdleTimer();
+        }
     }
 }

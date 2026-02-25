@@ -1,42 +1,56 @@
-import { _decorator, Component, Node, Vec3, tween } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Tween } from 'cc'; // Added Tween here
 const { ccclass, property } = _decorator;
 
 @ccclass('DiagonalMover')
 export class DiagonalMover extends Component {
 
-    @property(Vec3)
-    public moveOffset: Vec3 = new Vec3(50, -50, 0); // Distance to travel diagonally
+    @property({ type: Vec3, tooltip: "Spawn offset relative to the card" })
+    public initialOffset: Vec3 = new Vec3(0, 50, 0); // Spawns 50px ABOVE the card
+
+    @property({ type: Vec3, tooltip: "Distance and direction to animate" })
+    public moveOffset: Vec3 = new Vec3(0, 50, 0); // Moves 50px DOWN (Only Y-axis)
 
     @property
-    public duration: number = 1.0; // Time for one direction
+    public duration: number = 0.5; 
 
-    private _startPos: Vec3 = new Vec3();
-
-    onLoad() {
-        // Capture the starting local position
-        this._startPos = this.node.getPosition();
-        this.startMoving();
-    }
-
-    private startMoving() {
-        // Calculate the destination point relative to start
-        const targetPos = new Vec3(
-            this._startPos.x + this.moveOffset.x,
-            this._startPos.y + this.moveOffset.y,
-            this._startPos.z + this.moveOffset.z
+    public startMovingAt(targetLocalPos: Vec3) {
+        // PROPERLY stop any previously running tweens on this node
+        Tween.stopAllByTarget(this.node);
+        
+        // 1. Calculate the spawn position by applying the initial Y offset
+        const startPos = new Vec3(
+            targetLocalPos.x + this.initialOffset.x,
+            targetLocalPos.y + this.initialOffset.y,
+            targetLocalPos.z + this.initialOffset.z
         );
 
-        // Infinite loop: Start -> Target -> Start
+        // Snap to the new starting position and ensure it is visible
+        this.node.setPosition(startPos);
+        console.log("new position ", startPos);
+        this.node.active = true;
+
+        // 2. Calculate where the hand should move TO
+        const endPos = new Vec3(
+            startPos.x + this.moveOffset.x,
+            startPos.y + this.moveOffset.y,
+            startPos.z + this.moveOffset.z
+        );
+
+        // 3. Animate: Start -> End -> Start
         tween(this.node)
             .repeatForever(
                 tween()
-                .to(this.duration, { position: this._startPos }, { easing: 'sineInOut' })
-                    .to(this.duration, { position: targetPos }, { easing: 'sineInOut' })
+                    // Hand moves IN toward the card (snappy deceleration)
+                    .to(this.duration, { position: endPos }, { easing: 'quadOut' })
+                    // Hand pulls BACK to the start (smooth acceleration)
+                    .to(this.duration, { position: startPos }, { easing: 'quadIn' })
             )
             .start();
     }
 
     public stopMoving() {
-        tween(this.node).stop();
+        // PROPERLY kill the tween before hiding the node
+        Tween.stopAllByTarget(this.node);
+        this.node.active = false;
     }
 }
