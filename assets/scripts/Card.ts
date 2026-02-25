@@ -72,11 +72,19 @@ export class CardLogic extends Component {
     private _originalPositions: Vec3[] = [];
     private _originalSiblingIndices: number[] = [];
 
+    public getAnimationLock(): boolean {
+        return this._isAnimating;
+    }
+
+    public setAnimationLock(isLocked: boolean) {
+        this._isAnimating = isLocked;
+    }
     onLoad() {
         this._audioSource = this.getComponent(AudioSource) || this.addComponent(AudioSource);
         this.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.updatePlaceholderVisibility();
     }
+    
 
     update(dt: number) {
         // If the user is currently dragging a card, continuously reset the hint timer
@@ -391,6 +399,9 @@ export class CardLogic extends Component {
     }
 
     checkSpecificDropValidity(dragHead: Node, targetLogic: CardLogic): boolean {
+
+        // 🌟 FIX: Instantly reject drops on currently animating targets
+        if (targetLogic.getAnimationLock()) return false;
         const dragData = this.getCardData(dragHead);
         if (!dragData) return false;
 
@@ -665,178 +676,202 @@ export class CardLogic extends Component {
             if (wasteLogic) wasteLogic.updatePlaceholderVisibility();
         }
     }
+executeStackMove(nodesToMove: Node[], target: CardLogic, onComplete?: () => void) {
+        if (!this.gameManager || !this.gameManager.globalOverlay) {
+            if (onComplete) onComplete(); 
+            return;
+        }
 
-    executeStackMove(nodesToMove: Node[], target: CardLogic, onComplete?: () => void) {
-        if (!this.gameManager || !this.gameManager.globalOverlay) {
-            if (onComplete) onComplete(); 
-            return;
-        }
+        // 🌟 FIX: Lock both the source and the target immediately
+        this.setAnimationLock(true);
+        target.setAnimationLock(true);
 
-        const overlay = this.gameManager.globalOverlay;
-        const overlayTransform = overlay.getComponent(UITransform);
-        const targetLayout = target.getComponent(Layout);
+        const overlay = this.gameManager.globalOverlay;
+        const overlayTransform = overlay.getComponent(UITransform);
+        const targetLayout = target.getComponent(Layout);
 
-        if (this.gameManager) this.gameManager.addValidMove(this.node); 
+        if (this.gameManager) this.gameManager.addValidMove(this.node); 
 
-        // =========================================================
-        // 1. STOCK DRAW LOGIC
-        // =========================================================
-        if (this.holderType === HolderType.STOCK) {
-            let completedCount = 0;
-            const totalCount = nodesToMove.length;
-            nodesToMove.forEach(cardNode => {
-                const startWorldPos = cardNode.getWorldPosition().clone();
-                const startWorldScale = cardNode.getWorldScale().clone(); 
-                const targetWorldPos = target.node.getWorldPosition().clone();
+        // =========================================================
+        // 1. STOCK DRAW LOGIC
+        // =========================================================
+        if (this.holderType === HolderType.STOCK) {
+            let completedCount = 0;
+            const totalCount = nodesToMove.length;
+            nodesToMove.forEach(cardNode => {
+                const startWorldPos = cardNode.getWorldPosition().clone();
+                const startWorldScale = cardNode.getWorldScale().clone(); 
+                const targetWorldPos = target.node.getWorldPosition().clone();
 
-                cardNode.setParent(overlay);
-                cardNode.setWorldScale(startWorldScale); 
-                const baseScale = cardNode.scale.clone(); 
-                
-                let startLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(startWorldPos) : startWorldPos;
-                let targetLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(targetWorldPos) : targetWorldPos;
+                cardNode.setParent(overlay);
+                cardNode.setWorldScale(startWorldScale); 
+                const baseScale = cardNode.scale.clone(); 
+                
+                let startLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(startWorldPos) : startWorldPos;
+                let targetLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(targetWorldPos) : targetWorldPos;
 
-                cardNode.setPosition(startLocalPos);
-                
-                const midX = (startLocalPos.x + targetLocalPos.x) / 2;
-                const midY = (startLocalPos.y + targetLocalPos.y) / 2 + 60; 
-                const peakPos = new Vec3(midX, midY, 0);
-                const messyPileAngle = (Math.random() * 4) - 2; 
+                cardNode.setPosition(startLocalPos);
+                
+                const midX = (startLocalPos.x + targetLocalPos.x) / 2;
+                const midY = (startLocalPos.y + targetLocalPos.y) / 2 + 60; 
+                const peakPos = new Vec3(midX, midY, 0);
+                const messyPileAngle = (Math.random() * 4) - 2; 
 
-                cardNode.setSiblingIndex(999); 
-                const duration = 0.35; 
+                cardNode.setSiblingIndex(999); 
+                const duration = 0.35; 
 
-                tween(cardNode)
-                    .parallel(
-                        tween()
-                            .to(duration * 0.5, { position: peakPos }, { easing: 'sineOut' }) 
-                            .to(duration * 0.5, { position: targetLocalPos }, { easing: 'sineIn' }),
+                tween(cardNode)
+                    .parallel(
+                        tween()
+                            .to(duration * 0.5, { position: peakPos }, { easing: 'sineOut' }) 
+                            .to(duration * 0.5, { position: targetLocalPos }, { easing: 'sineIn' }),
 
-                        tween()
-                            .to(duration * 0.5, { scale: new Vec3(0, baseScale.y * 1.15, baseScale.z) }, { easing: 'sineIn' }) 
-                            .call(() => {
-                                const flipper = cardNode.getComponent(CardFlipper);
-                                const sprite = cardNode.getComponent(Sprite);
-                                if (flipper && sprite && flipper.faceUpSprite) {
-                                    sprite.spriteFrame = flipper.faceUpSprite;
-                                    cardNode.name = flipper.faceUpSprite.name;
-                                }
-                            })
-                            .to(duration * 0.5, { scale: baseScale }, { easing: 'sineOut' }),
-                        tween().to(duration, { angle: messyPileAngle })
-                    )
-                    .call(() => {
-                        if (target.node && isValid(target.node)) {
-                            cardNode.setParent(target.node);
-                            cardNode.setPosition(0, 0, 0); 
-                            cardNode.setScale(1, 1, 1); 
-                            cardNode.angle = messyPileAngle; 
-                            
-                            tween(cardNode).to(0.1, { scale: new Vec3(1.05, 0.95, 1) }).to(0.15, { scale: new Vec3(1, 1, 1) }).start();
-                            this.updatePlaceholderVisibility();
-                            target.updatePlaceholderVisibility();
-                        }
-                        completedCount++;
-                        if (completedCount === totalCount) {
-                            // 🌟 FIX: Trigger the success animation for Stock to Waste moves
-                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
-                            
-                            if (onComplete) onComplete(); 
-                        }
-                    })
-                    .start();
-            });
-            return; 
-        }
+                        tween()
+                            .to(duration * 0.5, { scale: new Vec3(0, baseScale.y * 1.15, baseScale.z) }, { easing: 'sineIn' }) 
+                            .call(() => {
+                                const flipper = cardNode.getComponent(CardFlipper);
+                                const sprite = cardNode.getComponent(Sprite);
+                                if (flipper && sprite && flipper.faceUpSprite) {
+                                    sprite.spriteFrame = flipper.faceUpSprite;
+                                    cardNode.name = flipper.faceUpSprite.name;
+                                }
+                            })
+                            .to(duration * 0.5, { scale: baseScale }, { easing: 'sineOut' }),
+                        tween().to(duration, { angle: messyPileAngle })
+                    )
+                    .call(() => {
+                        if (target.node && isValid(target.node)) {
+                            cardNode.setParent(target.node);
+                            cardNode.setPosition(0, 0, 0); 
+                            cardNode.setScale(1, 1, 1); 
+                            cardNode.angle = messyPileAngle; 
+                            
+                            tween(cardNode).to(0.1, { scale: new Vec3(1.05, 0.95, 1) }).to(0.15, { scale: new Vec3(1, 1, 1) }).start();
+                            this.updatePlaceholderVisibility();
+                            target.updatePlaceholderVisibility();
 
-        // =========================================================
-        // 2. STANDARD MOVE LOGIC
-        // =========================================================
-        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
-        
-        nodesToMove.forEach(cardNode => {
-            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
-            op.opacity = 0; 
-            cardNode.setParent(target.node); 
-        });
+                        }
+                        completedCount++;
+                        if (completedCount === totalCount) {
+                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
 
-        target.updatePlaceholderVisibility(); 
-        if (targetLayout) targetLayout.updateLayout(); 
-        this.updatePlaceholderVisibility(); 
+                            // 🌟 FIX: Unlock when finished
+                            this.setAnimationLock(false);
+                            target.setAnimationLock(false);
 
-        target.node.updateWorldTransform(); 
-        nodesToMove.forEach(node => node.updateWorldTransform()); 
+                            if (onComplete) onComplete(); 
+                        }
+                    })
+                    .start();
+            });
+            return; 
+        }
 
-        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
+        // =========================================================
+        // 2. STANDARD MOVE LOGIC
+        // =========================================================
+        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
+        
+        nodesToMove.forEach(cardNode => {
+            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+            op.opacity = 0; 
+            cardNode.setParent(target.node); 
+        });
 
-        nodesToMove.forEach((cardNode, index) => {
-            cardNode.setParent(overlay);
-            cardNode.setWorldPosition(startWorldPositions[index]);
-            cardNode.setWorldScale(startWorldScales[index]);
-            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
-            op.opacity = 255;
-        });
+        target.updatePlaceholderVisibility(); 
+        if (targetLayout) targetLayout.updateLayout(); 
+        this.updatePlaceholderVisibility(); 
 
-        // 🌟 Track completions to fix ordering bugs
-        let completedCount = 0;
-        const totalCards = nodesToMove.length;
+        target.node.updateWorldTransform(); 
+        nodesToMove.forEach(node => node.updateWorldTransform()); 
 
-        nodesToMove.forEach((cardNode, index) => {
-            let targetPosInOverlay = overlayTransform ? overlayTransform.convertToNodeSpaceAR(finalWorldPositions[index]) : finalWorldPositions[index];
-            const startPos = cardNode.position.clone();
-            const originalScale = cardNode.scale.clone();
+        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
 
-            const midX = (startPos.x + targetPosInOverlay.x) / 2;
-            const midY = (startPos.y + targetPosInOverlay.y) / 2 + 150; 
-            const midPos = new Vec3(midX, midY, 0);
+        nodesToMove.forEach((cardNode, index) => {
+            cardNode.setParent(overlay);
+            cardNode.setWorldPosition(startWorldPositions[index]);
+            cardNode.setWorldScale(startWorldScales[index]);
+            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+            op.opacity = 255;
+        });
 
-            const randomTilt = (Math.random() * 20) - 10;
-            const flightDuration = 0.45; 
-            const staggerDelay = index * 0.05; 
+        let completedCount = 0;
+        const totalCards = nodesToMove.length;
 
-            cardNode.setSiblingIndex(999); 
+        if (targetLayout) {
+            targetLayout.enabled = false; 
+        }
 
-            tween(cardNode)
-                .delay(staggerDelay)
-                .parallel(
-                    tween()
-                        .to(flightDuration * 0.5, { position: midPos }, { easing: 'sineOut' })
-                        .to(flightDuration * 0.5, { position: targetPosInOverlay }, { easing: 'quadIn' }),
-                    tween()
-                        .to(flightDuration * 0.5, { scale: new Vec3(originalScale.x * 1.2, originalScale.y * 1.2, 1) }, { easing: 'sineOut' })
-                        .to(flightDuration * 0.5, { scale: originalScale }, { easing: 'sineIn' }),
-                    tween().to(flightDuration * 0.8, { angle: randomTilt }).to(flightDuration * 0.2, { angle: 0 }) 
-                )
-                .call(() => {
-                    if (target.node && isValid(target.node)) {
-                        cardNode.setParent(target.node);
-                        cardNode.setPosition(finalLocalPositions[index]);
-                        cardNode.setScale(new Vec3(1, 1, 1)); 
+        nodesToMove.forEach((cardNode, index) => {
+            let targetPosInOverlay = overlayTransform ? overlayTransform.convertToNodeSpaceAR(finalWorldPositions[index]) : finalWorldPositions[index];
+            const startPos = cardNode.position.clone();
+            const originalScale = cardNode.scale.clone();
 
-                        tween(cardNode).to(0.1, { scale: new Vec3(1.05, 0.95, 1) }).to(0.15, { scale: new Vec3(1, 1, 1) }).start();
+            const midX = (startPos.x + targetPosInOverlay.x) / 2;
+            const midY = (startPos.y + targetPosInOverlay.y) / 2 + 150; 
+            const midPos = new Vec3(midX, midY, 0);
 
-                        completedCount++;
+            const randomTilt = (Math.random() * 20) - 10;
+            const flightDuration = 0.45; 
+            const staggerDelay = index * 0.05; 
 
-                        if (completedCount === totalCards) {
-                            
-                            // Iterate through the original sorted list and force them to the top
-                            nodesToMove.forEach(n => {
-                                if (n.parent) n.setSiblingIndex(n.parent.children.length - 1);
-                            });
+            cardNode.setSiblingIndex(999); 
 
-                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
-                            this.checkAndFlipRevealedCard(); 
-                            if (targetLayout) targetLayout.updateLayout();
-                            if (this.holderType === HolderType.WASTE) this.checkDeckDepletion();
-                            if (onComplete) onComplete(); 
-                        }
-                    }
-                })
-                .start();
-        });
-    }
+            tween(cardNode)
+                .delay(staggerDelay)
+                .parallel(
+                    tween()
+                        .to(flightDuration * 0.5, { position: midPos }, { easing: 'sineOut' })
+                        .to(flightDuration * 0.5, { position: targetPosInOverlay }, { easing: 'quadIn' }),
+                    tween()
+                        .to(flightDuration * 0.5, { scale: new Vec3(originalScale.x * 1.2, originalScale.y * 1.2, 1) }, { easing: 'sineOut' })
+                        .to(flightDuration * 0.5, { scale: originalScale }, { easing: 'sineIn' }),
+                    tween().to(flightDuration * 0.8, { angle: randomTilt }).to(flightDuration * 0.2, { angle: 0 }) 
+                )
+                .call(() => {
+                    if (target.node && isValid(target.node)) {
+                        cardNode.setParent(target.node);
+                        cardNode.setPosition(finalLocalPositions[index]);
+                        cardNode.setScale(new Vec3(1, 1, 1)); 
+
+                        tween(cardNode)
+                            .to(0.1, { scale: new Vec3(1.05, 0.95, 1) })
+                            .to(0.15, { scale: new Vec3(1, 1, 1) })
+                            .start();
+
+                        completedCount++;
+
+                        if (completedCount === totalCards) {
+                            nodesToMove.forEach(n => {
+                                if (n.parent) n.setSiblingIndex(n.parent.children.length - 1);
+                            });
+
+                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
+                            this.checkAndFlipRevealedCard(); 
+                            
+                            this.scheduleOnce(() => {
+                                if (targetLayout && isValid(targetLayout.node)) {
+                                    targetLayout.enabled = true;
+                                    targetLayout.updateLayout();
+                                }
+                                
+                                if (this.holderType === HolderType.WASTE) this.checkDeckDepletion();
+                                
+                                // 🌟 FIX: Unlock both the target and the source now that animation is fully done
+                                this.setAnimationLock(false);
+                                target.setAnimationLock(false);
+
+                                if (onComplete) onComplete(); 
+
+                            }, 0.3); 
+                        }
+                    }
+                })
+                .start();
+        });
+    }
 
     findFoundationMove(movingData: CardData, sequence: Node[]): boolean {
         if (sequence.length > 1) return false; 
@@ -845,6 +880,9 @@ export class CardLogic extends Component {
         for (const targetNode of this.gameManager.foundationNodes) {
             const targetLogic = targetNode.getComponent(CardLogic);
             if (!targetLogic) continue;
+
+            // 🌟 FIX: Ignore targets that are currently animating
+            if (targetLogic.getAnimationLock()) continue;
 
             const targetCards = targetLogic.node.children.filter(c => c.name.startsWith("card") && !c.name.includes("foundation_A"));
             const isTargetEmpty = targetCards.length === 0;
@@ -873,6 +911,9 @@ export class CardLogic extends Component {
             const target = targetNode.getComponent(CardLogic);
             if (!target || target === this || target.holderType !== HolderType.TABLEAU) continue; 
             
+            // 🌟 FIX: Ignore targets that are currently animating
+            if (target.getAnimationLock()) continue;
+
             const targetChildren = target.node.children.filter(c => 
                 c !== target.placeholderNode && 
                 (c.name.startsWith("card") || c.name.includes("faceDown"))

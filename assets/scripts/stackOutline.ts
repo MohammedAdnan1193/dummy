@@ -9,7 +9,7 @@ export class StackOutline extends Component {
 
     // Constants 
     private readonly CARD_HEIGHT = 230;
-    private readonly STACK_OFFSET = 78; 
+    private readonly STACK_OFFSET = 77; 
     
 
     onLoad() {
