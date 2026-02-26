@@ -17,7 +17,7 @@ export class PeriodicScaler extends Component {
     onLoad() {
         // Store the original scale so we always return to it
         this._initialScale = this.node.getScale();
-        this.startPulsing();
+        // this.startPulsing();
         this.node.on(Node.EventType.TOUCH_START, this.onButtonClick, this);
     }
     private onButtonClick() {
@@ -26,7 +26,7 @@ export class PeriodicScaler extends Component {
         // Open the URL in a new tab
         window.open(this.targetUrl, '_blank');
     }
-    private startPulsing() {
+    public startPulsing() {
         const bigScale = new Vec3(
             this._initialScale.x * this.targetScale,
             this._initialScale.y * this.targetScale,

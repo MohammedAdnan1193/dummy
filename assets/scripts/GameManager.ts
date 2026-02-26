@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip, UITransform, Label, CCInteger, Color, Prefab, instantiate, Sprite, math, view,SpriteFrame,sys } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, UIOpacity, isValid, AudioSource, AudioClip, UITransform, Label, CCInteger, Color, Prefab, instantiate, Sprite, math, view, SpriteFrame, sys } from 'cc';
 import { StackOutline } from './stackOutline'; 
 
 const { ccclass, property } = _decorator;
@@ -87,12 +87,15 @@ export class GameManager extends Component {
     @property({ type: Node, tooltip: "Container node to hold instantiated confetti" })
     public confettiContainer: Node = null!;
 
-    // --- APP STORE REDIRECT ---
+    // --- APP STORE REDIRECT & TIMER ---
     @property({ tooltip: "The App Store or Play Store URL" })
     public appStoreURL: string = "https://play.google.com/store/apps/details?id=com.felicitygames.yourgame";
 
     @property({ type: CCInteger, tooltip: "Seconds until the game auto-redirects to the store" })
-    public autoRedirectSeconds: number = 45;
+    public autoRedirectInterval: number = 30;
+
+    @property({ type: Label, tooltip: "Visual timer text label" })
+    public timerLabel: Label = null!;
 
     // --- MOVES SYSTEM ---
     @property({ type: Label }) public movesLabel: Label = null!;
@@ -119,14 +122,18 @@ export class GameManager extends Component {
     private _idleTimer: number = 0;
     private _isHintActive: boolean = false;
     private _currentMoves: number = 0;   
-    private _totalHiddenCards: number = 21; 
+    private _totalHiddenCards: number = 15; 
     private _revealedCount: number = 0;
     private _animationComplete: boolean = false; 
+    
+    private _redirectTimer: number = 0;
+    private _isTimerRunning: boolean = false;
+
     public get isAnimationComplete(): boolean {
         return this._animationComplete;
     }
     private _isMuted: boolean = false;
-    private _hasRedirected: boolean = false;
+    private _startafter: number = 3;
 
     onLoad() {
         this.initBGM();
@@ -139,6 +146,7 @@ export class GameManager extends Component {
     }
 
     update(dt: number) {
+        // 1. Existing Idle Hint Logic
         if (!this._gameWon && !this._gameOver && !this._isHintActive && !this._isAutoPlaying && 
             this.mainNode.active && this._animationComplete) {
             this._idleTimer += dt;
@@ -146,6 +154,35 @@ export class GameManager extends Component {
                 this.showDynamicHint();
             }
         }
+
+        // 2. Text-Based Periodic Timer Logic
+        if (this._isTimerRunning && !this._gameWon && !this._gameOver && this._animationComplete) {
+            this._redirectTimer += dt;
+            
+            // Calculate how much time is left
+            const timeLeft = Math.max(0, this.autoRedirectInterval - this._redirectTimer);
+            
+            // Update the text label (e.g., "30", "29", etc.)
+            if (this.timerLabel) {
+                this.timerLabel.string = `${Math.ceil(timeLeft)}`; 
+            }
+
+            // Trigger redirect and reset loop when time is up
+            if (this._redirectTimer >= this.autoRedirectInterval) {
+                this.triggerPeriodicRedirect();
+            }
+        }
+    }
+
+    private triggerPeriodicRedirect() {
+        // Reset the timer state to start the 30 seconds over again
+        this._redirectTimer = 0;
+        if (this.timerLabel) {
+            this.timerLabel.string = `${this.autoRedirectInterval}`;
+        }
+
+        console.log(`[GameManager] Periodic ${this.autoRedirectInterval}s Redirect to App Store!`);
+        sys.openURL(this.appStoreURL);
     }
 
     public resetIdleTimer() {
@@ -162,6 +199,12 @@ export class GameManager extends Component {
 
         this._currentMoves--;
         this.updateMovesLabel();
+
+        // Calculate moves made and trigger the pulse at exactly 3 moves
+        const movesMade = this.maxMoves - this._currentMoves;
+        if (movesMade === this._startafter) {
+            this.startDownloadButtonsPulse();
+        }
 
         if (this._currentMoves <= 0) {
             this.triggerLoseState();
@@ -193,7 +236,9 @@ export class GameManager extends Component {
         buttons.forEach(btn => {
             if (isValid(btn)) {
                 const scaler = btn.getComponent('PeriodicScaler') as unknown as PeriodicScalerComponent;
-                if (scaler) scaler.startPulsing();
+                if (scaler) {
+                    scaler.startPulsing();
+                }
             }
         });
     }
@@ -214,8 +259,7 @@ export class GameManager extends Component {
                 tween(opacity)
                     .to(0.4, { opacity: 0 })
                     .call(() => {
-                        this.timePopupNode.active = false;
-                        this.startDownloadButtonsPulse(); 
+                        this.timePopupNode.active = false; 
                     })
                     .start();
             })
@@ -676,17 +720,13 @@ export class GameManager extends Component {
     }
 
     public redirectToAppStore() {
-        if (this._hasRedirected) return;
-        this._hasRedirected = true;
-        
-        console.log(`[GameManager] Redirecting to App Store: ${this.appStoreURL}`);
+        console.log(`[GameManager] Manual Redirecting to App Store: ${this.appStoreURL}`);
         sys.openURL(this.appStoreURL);
     }
 
     public toggleBGM() {
         this._isMuted = !this._isMuted;
 
-        // Toggle the actual audio
         if (this._audioSource) {
             if (this._isMuted) {
                 this._audioSource.pause(); 
@@ -695,7 +735,6 @@ export class GameManager extends Component {
             }
         }
 
-        // Swap the visual icon if the sprites are assigned
         if (this.muteButtonNode && this.soundOnSprite && this.soundOffSprite) {
             const spriteComp = this.muteButtonNode.getComponent(Sprite);
             if (spriteComp) {
@@ -707,6 +746,7 @@ export class GameManager extends Component {
     private triggerWinState() {
         if (this._gameWon) return;
         this._gameWon = true;
+        this._isTimerRunning = false; // Stop auto-redirect timer
         this.scheduleOnce(() => { this.showCTA(); }, 0.5);
     }
 
@@ -723,6 +763,7 @@ export class GameManager extends Component {
     private triggerLoseState() {
         if (this._gameWon || this._gameOver) return;
         this._gameOver = true;
+        this._isTimerRunning = false; // Stop auto-redirect timer
         this.hideDynamicHint();
         this.scheduleOnce(() => { this.showYouLostScreen(); }, 0.5);
     }
@@ -738,16 +779,9 @@ export class GameManager extends Component {
             .to(0.5, { scale: new Vec3(1.1, 1.1, 1) }, { easing: 'backOut' })
             .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
             .call(() => {
-                // Trigger the new pulse logic for losing
                 this.playYouLostPulse();
             })
             .start();
-    //     this.playEpicConfetti();
-    //     this.schedule(() => {
-    //         if (this.youLostScreen.active) {
-    //             this.playEpicConfetti();
-    //         }
-    //     }, 1.6);
     }
     
     private initBGM() {
@@ -781,9 +815,10 @@ export class GameManager extends Component {
    
     private startSequence() {
         this.startGameLogic();
-        this.scheduleOnce(() => {
-            this.redirectToAppStore();
-        }, this.autoRedirectSeconds); 
+        
+        // Start the continuous loop timer
+        this._redirectTimer = 0;
+        this._isTimerRunning = true;
     }
 
     private playIntroSequence() {
@@ -799,7 +834,6 @@ export class GameManager extends Component {
                     .to(0.5, { opacity: 0 })
                     .call(() => { 
                         this.introNode.active = false; 
-                        // this._animationComplete = true; 
                     })
                     .start();
             }, 3.0);
@@ -827,7 +861,6 @@ export class GameManager extends Component {
             .to(0.5, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'backOut' })
             .to(0.3, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
             .call(() => {
-                // Trigger the looping pulse which now includes the particles
                 this.playCTAPulse();
             })
             .start();
@@ -836,17 +869,14 @@ export class GameManager extends Component {
     private playCTAPulse() {
         if (!isValid(this.ctaScreen)) return;
         
-        // 1. Loop the UI scaling
         tween(this.ctaScreen).repeatForever(
             tween()
                 .to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' })
                 .to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
         ).start();
 
-        // 2. Play first burst immediately
         this.playEpicConfetti();
         
-        // 3. Loop the confetti continuously while the CTA screen is active
         this.schedule(() => {
             if (this.ctaScreen.active) {
                 this.playEpicConfetti();
@@ -857,13 +887,11 @@ export class GameManager extends Component {
     private playYouLostPulse() {
         if (!isValid(this.youLostScreen)) return;
         
-        // 1. Loop the UI scaling (Confetti calls removed from here)
         tween(this.youLostScreen).repeatForever(
             tween()
                 .to(0.8, { scale: new Vec3(1.05, 1.05, 1) }, { easing: 'sineInOut' })
                 .to(0.8, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
         ).start();
-        // this.playEpicConfetti();
     }
 
     private playEpicConfetti() {
@@ -873,13 +901,11 @@ export class GameManager extends Component {
             new Color(255, 255, 255, 255)  // Pure White
         ];
 
-        // 1. THE BURST: An immediate, energetic magical explosion from the pedestal
         this.createMysticBurst(0, -150, 80, elegantColors);
 
-        // 2. THE CASCADE: The elegant, randomized falling leaves that sustain the joy
         this.scheduleOnce(() => {
             this.createEnchantedCascade(elegantColors, 40);
-        }, 0.3); // Starts just as the burst slows down
+        }, 0.3); 
         
         this.scheduleOnce(() => {
             this.createEnchantedCascade(elegantColors, 35);
@@ -903,48 +929,42 @@ export class GameManager extends Component {
 
             if (sprite) sprite.color = colors[Math.floor(Math.random() * colors.length)];
             
-            // Slightly smaller scale for the burst so it feels like dense energy
             const baseScale = Math.random() * 0.3 + 0.08;
             piece.setScale(new Vec3(baseScale, baseScale, 1));
             piece.setPosition(startX, startY, 0);
 
-            // 360-degree explosive math
             const angle = Math.random() * Math.PI * 2; 
-            const force = Math.random() * 700 + 300; // High speed
+            const force = Math.random() * 700 + 300; 
             
             const burstTargetX = startX + (Math.cos(angle) * force);
             const burstTargetY = startY + (Math.sin(angle) * force);
 
-            const burstDuration = Math.random() * 0.4 + 0.2; // Very fast outwards
-            const floatDuration = Math.random() * 1.5 + 1.0; // Hangs in the air
+            const burstDuration = Math.random() * 0.4 + 0.2; 
+            const floatDuration = Math.random() * 1.5 + 1.0; 
 
             const animState = { t: 0 };
             
             tween(animState)
-                // Phase 1: The Snappy Explosion
                 .to(burstDuration, { t: 1 }, {
-                    easing: 'expoOut', // Starts incredibly fast, brakes hard
+                    easing: 'expoOut', 
                     onUpdate: (target: {t: number}) => {
                         const progress = target.t;
                         const currentX = math.lerp(startX, burstTargetX, progress);
                         const currentY = math.lerp(startY, burstTargetY, progress);
                         
                         piece.setPosition(currentX, currentY, 0);
-                        piece.angle = progress * 720; // Violent spin
+                        piece.angle = progress * 720; 
                     }
                 })
-                // Phase 2: The Magic Dissipates
                 .call(() => { animState.t = 0; })
                 .to(floatDuration, { t: 1 }, {
                     easing: 'sineOut',
                     onUpdate: (target: {t: number}) => {
                         const progress = target.t;
                         
-                        // Drift down very slightly like embers
                         const currentY = math.lerp(burstTargetY, burstTargetY - 80, progress);
                         piece.setPosition(burstTargetX, currentY, 0);
                         
-                        // Fade out into the background
                         uiOpacity.opacity = math.lerp(255, 0, progress);
                         piece.angle += 2;
                     }
@@ -968,28 +988,24 @@ export class GameManager extends Component {
             
             if (sprite) sprite.color = colors[Math.floor(Math.random() * colors.length)];
             
-            // RANDOMNESS 1: Stagger the starting heights so they don't drop in a perfect flat line
             const startX = (Math.random() * screenSize.width) - (screenSize.width / 2);
             const startY = (screenSize.height / 2) + 100 + (Math.random() * 300); 
             piece.setPosition(startX, startY, 0);
 
-            // RANDOMNESS 2: Extreme scale variations for "Depth" (some close to camera, some far)
-            const isForeground = Math.random() > 0.85; // 15% chance to be a massive foreground piece
+            const isForeground = Math.random() > 0.85; 
             const baseScale = isForeground ? (Math.random() * 0.5 + 0.4) : (Math.random() * 0.2 + 0.05);
             piece.setScale(new Vec3(baseScale, baseScale, 1));
             
-            // Dim the background ones slightly to enhance the 3D parallax feel
             const maxOpacity = isForeground ? 255 : 160;
 
-            // RANDOMNESS 3: Chaotic physics variables
             const fallSpeed = Math.random() * 4.0 + 2.5; 
             const swayWidth = Math.random() * 200 + 50;  
             const swaySpeed = Math.random() * 1.5 + 0.5;     
-            const turbulence = Math.random() * 4 + 2; // A secondary, faster wind pattern
+            const turbulence = Math.random() * 4 + 2; 
             
             const tumbleSpeed = Math.random() * 4 + 1; 
             const spinDirection = Math.random() > 0.5 ? 1 : -1;
-            const spinSpeed = (Math.random() * 3 + 0.5) * spinDirection; // Random direction and speed
+            const spinSpeed = (Math.random() * 3 + 0.5) * spinDirection; 
 
             const animState = { t: 0 };
             
@@ -1000,20 +1016,16 @@ export class GameManager extends Component {
                         
                         const currentY = math.lerp(startY, -screenSize.height / 2 - 150, progress);
                         
-                        // RANDOMNESS 4: Double sine-wave for organic, unpredictable fluttering
                         const primarySway = Math.sin(progress * Math.PI * swaySpeed) * swayWidth;
                         const erraticFlutter = Math.cos(progress * Math.PI * turbulence) * (swayWidth * 0.25);
                         
                         piece.setPosition(startX + primarySway + erraticFlutter, currentY, 0);
 
-                        // 3D Tumble
                         const scaleFlip = Math.cos(progress * Math.PI * tumbleSpeed);
                         piece.setScale(new Vec3(scaleFlip * baseScale, baseScale, 1));
                         
-                        // Chaotic Spin
                         piece.angle += spinSpeed;
 
-                        // Fade logic adapting to the random maxOpacity
                         if (progress < 0.1) {
                             uiOpacity.opacity = math.lerp(0, maxOpacity, progress * 10);
                         } else if (progress > 0.8) {

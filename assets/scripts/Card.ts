@@ -73,21 +73,20 @@ export class CardLogic extends Component {
     private _originalSiblingIndices: number[] = [];
 
     public getAnimationLock(): boolean {
-        return this._isAnimating;
-    }
+        return this._isAnimating;
+    }
 
-    public setAnimationLock(isLocked: boolean) {
-        this._isAnimating = isLocked;
-    }
+    public setAnimationLock(isLocked: boolean) {
+        this._isAnimating = isLocked;
+    }
+
     onLoad() {
         this._audioSource = this.getComponent(AudioSource) || this.addComponent(AudioSource);
         this.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.updatePlaceholderVisibility();
     }
     
-
     update(dt: number) {
-        // If the user is currently dragging a card, continuously reset the hint timer
         if (this._isDragging && this.gameManager) {
             this.gameManager.resetIdleTimer();
         }
@@ -99,9 +98,7 @@ export class CardLogic extends Component {
 
     onTouchStart(event: EventTouch) {
         if (this.gameManager) {
-            // 🔒 NEW LOCK: Ignore all touches if the intro drop animation is still running
             if (!this.gameManager.isAnimationComplete) return;
-            
             this.gameManager.resetIdleTimer();
         }
         if (this._isAnimating) return;
@@ -143,7 +140,6 @@ export class CardLogic extends Component {
 
         const uiLoc = event.getUILocation();
 
-        // 1. Threshold Check
         if (!this._dragThresholdPassed) {
             const dist = Vec2.distance(this._dragStartPos, uiLoc);
             if (dist > 10) { 
@@ -154,30 +150,20 @@ export class CardLogic extends Component {
             }
         }
 
-        // 2. Move Logic
         if (this._draggedCards.length > 0 && this.gameManager.globalOverlay) {
             const overlayTransform = this.gameManager.globalOverlay.getComponent(UITransform);
-            
-            // 🌟 UX IMPROVEMENT: VISUAL LIFT (Y-OFFSET)
-            // Add +80 to Y so the card appears ABOVE the user's finger (not covered by thumb)
             const fingerOffset = new Vec3(0, 80, 0); 
-            
             const worldPos = new Vec3(uiLoc.x, uiLoc.y, 0).add(this._dragOffset).add(fingerOffset);
             const localPos = overlayTransform.convertToNodeSpaceAR(worldPos);
 
-            // Physics Tilt Calculation
             const diffX = localPos.x - this._draggedCards[0].position.x;
             this._currentVelocityX = math.lerp(this._currentVelocityX, diffX, 0.5); 
             const targetAngle = math.clamp(-this._currentVelocityX * 1.5, -15, 15);
 
-            // Apply Head Position
             this._draggedCards[0].setPosition(localPos);
-            
-            // Apply Tilt
             const currentAngle = this._draggedCards[0].angle;
             this._draggedCards[0].angle = math.lerp(currentAngle, targetAngle, 0.2);
 
-            // Snake Tail Logic
             for (let i = 1; i < this._draggedCards.length; i++) {
                 const currentCard = this._draggedCards[i];
                 const prevCard = this._draggedCards[i-1];
@@ -185,21 +171,18 @@ export class CardLogic extends Component {
                 const targetPos = prevCard.position.clone();
                 targetPos.y -= 45; 
 
-                const smoothX = math.lerp(currentCard.position.x, targetPos.x, 0.45); // Slightly tighter follow
+                const smoothX = math.lerp(currentCard.position.x, targetPos.x, 0.45); 
                 const smoothY = math.lerp(currentCard.position.y, targetPos.y, 0.45);
 
                 currentCard.setPosition(smoothX, smoothY, 0);
                 currentCard.angle = math.lerp(currentCard.angle, prevCard.angle * 0.9, 0.2);
             }
 
-            // 🌟 UX IMPROVEMENT: PREDICTIVE HIGHLIGHTING
-            // Check what we are hovering over every frame to give feedback
             this.checkAndHighlightTarget();
         }
     }
 
     onDragEnd(event: EventTouch) {
-
         if (this.gameManager) this.gameManager.resetIdleTimer();
         
         this.node.off(Node.EventType.TOUCH_MOVE, this.onDragMove, this);
@@ -207,7 +190,6 @@ export class CardLogic extends Component {
         this.node.off(Node.EventType.TOUCH_CANCEL, this.onDragEnd, this);
         this._isDragging = false;
         
-        // 🌟 CLEAR HIGHLIGHTS
         if (this._activeHighlightTarget) {
             this._activeHighlightTarget.setHighlightState(false);
             this._activeHighlightTarget = null;
@@ -226,23 +208,18 @@ export class CardLogic extends Component {
         this.attemptDrop();
     }
 
-    // 🌟 UX: Highlight the valid target under the dragged card
     checkAndHighlightTarget() {
         const headCard = this._draggedCards[0];
-        const headTrans = headCard.getComponent(UITransform);
-        const headWorldPos = headCard.getWorldPosition(); // Center of card
+        const headWorldPos = headCard.getWorldPosition();
 
         const targets = [...this.gameManager.tableauNodes, ...this.gameManager.foundationNodes];
         let foundTarget: CardLogic | null = null;
-
-        // Find closest valid target
-        let minDist = 200; // Detection radius
+        let minDist = 200; 
 
         for (const targetNode of targets) {
             const targetLogic = targetNode.getComponent(CardLogic);
             if (!targetLogic || targetLogic === this) continue;
             
-            // Get the "Hotspot" of the target (Center of the last card or placeholder)
             let targetHotspot = targetNode.getWorldPosition();
             const targetChildren = targetLogic.node.children.filter(c => c.active && c.name.startsWith("card"));
             if (targetChildren.length > 0) {
@@ -252,32 +229,23 @@ export class CardLogic extends Component {
             const dist = Vec3.distance(headWorldPos, targetHotspot);
 
             if (dist < minDist) {
-                // Only highlight if it's a VALID move
-                if (this.checkSpecificDropValidity(headCard, targetLogic)) {
+                // Calling with isVerbose = false to prevent console spam during hover
+                if (this.checkSpecificDropValidity(headCard, targetLogic, false)) {
                     minDist = dist;
                     foundTarget = targetLogic;
                 }
             }
         }
 
-        // State Change Logic
         if (foundTarget !== this._activeHighlightTarget) {
-            // Unhighlight old
             if (this._activeHighlightTarget) this._activeHighlightTarget.setHighlightState(false);
-            
-            // Highlight new
             if (foundTarget) foundTarget.setHighlightState(true);
-            
             this._activeHighlightTarget = foundTarget;
         }
     }
 
-    // 🌟 UX: Visual Feedback on the Target Pile
     public setHighlightState(isActive: boolean) {
-        // 1. Find the best target to animate (Top card or Placeholder)
         let targetVisual: Node | null = null;
-
-        // Filter specifically for "Card" nodes that are active, ignoring the placeholder
         const activeCards = this.node.children.filter(c => 
             c.active && 
             c !== this.placeholderNode && 
@@ -285,31 +253,20 @@ export class CardLogic extends Component {
         );
 
         if (activeCards.length > 0) {
-            // If there are cards, highlight the top one
             targetVisual = activeCards[activeCards.length - 1];
         } else {
-            // If empty, highlight the placeholder (ONLY if it exists)
             if (this.placeholderNode && isValid(this.placeholderNode)) {
                 targetVisual = this.placeholderNode;
             }
         }
 
-        // 2. Safety Check: If no target was found (e.g., empty pile & unassigned placeholder), exit.
         if (!targetVisual) return;
-
-        // 3. Execute Animation
         Tween.stopAllByTarget(targetVisual);
 
         if (isActive) {
-            // "Pop" up to greet the incoming card
-            tween(targetVisual)
-                .to(0.15, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'sineOut' })
-                .start();
+            tween(targetVisual).to(0.15, { scale: new Vec3(1.15, 1.15, 1) }, { easing: 'sineOut' }).start();
         } else {
-            // Return to normal
-            tween(targetVisual)
-                .to(0.15, { scale: new Vec3(1, 1, 1) }, { easing: 'sineOut' })
-                .start();
+            tween(targetVisual).to(0.15, { scale: new Vec3(1, 1, 1) }, { easing: 'sineOut' }).start();
         }
     }
 
@@ -320,15 +277,11 @@ export class CardLogic extends Component {
         const overlayTrans = overlay.getComponent(UITransform);
         this._originalParent = this.node;
         
-        // 🌟 FIX PHASE 1: Capture ALL data BEFORE moving anything!
-        // If we move inside the loop, indices of remaining cards shift, causing incorrect data.
         this._originalPositions = this._draggedCards.map(c => c.getPosition().clone());
         this._originalSiblingIndices = this._draggedCards.map(c => c.getSiblingIndex());
 
-        // 🌟 FIX PHASE 2: Now it is safe to move them to the overlay
         this._draggedCards.forEach((card, index) => {
             const startWorldScale = card.getWorldScale().clone();   
-
             const worldPos = card.getWorldPosition();
             const localOverlayPos = overlayTrans.convertToNodeSpaceAR(worldPos);
 
@@ -336,7 +289,6 @@ export class CardLogic extends Component {
             card.setPosition(localOverlayPos);
             card.setWorldScale(startWorldScale); 
             
-            // Pop effect on pickup
             const currentScale = card.getScale();
             tween(card)
                 .to(0.1, { scale: new Vec3(currentScale.x * 1.2, currentScale.y * 1.2, 1) }, { easing: 'backOut' })
@@ -351,19 +303,16 @@ export class CardLogic extends Component {
         const headCard = this._draggedCards[0];
         const headWorldPos = headCard.getWorldPosition();
         
+        console.log(`%c[Attempt Drop] Dropping ${headCard.name} at WorldPos: (${headWorldPos.x.toFixed(2)}, ${headWorldPos.y.toFixed(2)})`, "color: #00BCD4; font-weight: bold;");
+
         const targets = [...this.gameManager.tableauNodes, ...this.gameManager.foundationNodes];
         let bestTarget: CardLogic | null = null;
         let closestDist = 1000;
 
-        // 🌟 UX IMPROVEMENT: PROXIMITY CHECK (FORGIVING HITBOX)
-        // Instead of strict rectangle intersection, check distance to the "heart" of the target.
-        // This allows dropping "near" the pile and having it snap in.
-        
         for (const targetNode of targets) {
             const targetLogic = targetNode.getComponent(CardLogic);
             if (!targetLogic || targetLogic === this) continue;
 
-            // Determine drop point (Last card or placeholder)
             let targetDropPoint = targetNode.getWorldPosition();
             const children = targetLogic.node.children.filter(c => c.active && c.name.startsWith("card"));
             if (children.length > 0) {
@@ -372,10 +321,11 @@ export class CardLogic extends Component {
 
             const dist = Vec3.distance(headWorldPos, targetDropPoint);
 
-            // Distance threshold (approx 1 card width)
             if (dist < 150) { 
+                console.log(`%c  -> Nearby Target Found: ${targetNode.name} (Distance: ${dist.toFixed(2)})`, "color: #FFC107");
                 if (dist < closestDist) {
-                    if (this.checkSpecificDropValidity(headCard, targetLogic)) {
+                    // Call with isVerbose = true to log WHY it succeeds or fails
+                    if (this.checkSpecificDropValidity(headCard, targetLogic, true)) {
                         closestDist = dist;
                         bestTarget = targetLogic;
                     }
@@ -384,26 +334,30 @@ export class CardLogic extends Component {
         }
 
         if (bestTarget) {
-            console.log(`[CardLogic] 🎯 Drop valid on ${bestTarget.node.name}`);
+            console.log(`%c[Attempt Drop] 🎯 SUCCESS: Executing drop on ${bestTarget.node.name}`, "color: #4CAF50; font-weight: bold;");
             this._draggedCards.forEach(c => {
                 const op = c.getComponent(UIOpacity) || c.addComponent(UIOpacity);
                 op.opacity = 255;
             });
             this.executeStackMove(this._draggedCards, bestTarget);
-            
-            // 🌟 FIX ADDED HERE: Clear the dragged cards array so subsequent actions don't try to use an old array state
             this._draggedCards = []; 
         } else {
+            console.log(`%c[Attempt Drop] ❌ FAILED: No valid targets in range. Returning to original position.`, "color: #F44336; font-weight: bold;");
             this.returnCardsToOriginal();
         }
     }
 
-    checkSpecificDropValidity(dragHead: Node, targetLogic: CardLogic): boolean {
-
-        // 🌟 FIX: Instantly reject drops on currently animating targets
-        if (targetLogic.getAnimationLock()) return false;
+    checkSpecificDropValidity(dragHead: Node, targetLogic: CardLogic, isVerbose: boolean = false): boolean {
+        if (targetLogic.getAnimationLock()) {
+            if (isVerbose) console.log(`    ❌ Rejecting ${targetLogic.node.name}: Target is currently animating/locked.`);
+            return false;
+        }
+        
         const dragData = this.getCardData(dragHead);
-        if (!dragData) return false;
+        if (!dragData) {
+            if (isVerbose) console.log(`    ❌ Rejecting ${targetLogic.node.name}: Dragged item is not a valid card data.`);
+            return false;
+        }
 
         const targetChildren = targetLogic.node.children.filter(c => 
             c.active && c !== targetLogic.placeholderNode && c.name.startsWith("card")
@@ -413,9 +367,15 @@ export class CardLogic extends Component {
 
         if (isTargetEmpty) {
             if (targetLogic.holderType === HolderType.TABLEAU) {
-                return dragData.value === 12; // King only
+                const isValid = dragData.value === 12; // King only
+                if (isVerbose && !isValid) console.log(`    ❌ Rejecting ${targetLogic.node.name}: Empty Tableau requires a King (value 12). Got: ${dragData.value}.`);
+                if (isVerbose && isValid) console.log(`    ✅ Accepting ${targetLogic.node.name}: Dragged is King to empty Tableau.`);
+                return isValid;
             } else if (targetLogic.holderType === HolderType.FOUNDATION) {
-                return dragData.value === 0 && this._draggedCards.length === 1;
+                const isValid = dragData.value === 0 && this._draggedCards.length === 1;
+                if (isVerbose && !isValid) console.log(`    ❌ Rejecting ${targetLogic.node.name}: Empty Foundation requires single Ace (value 0). Dragged length: ${this._draggedCards.length}, value: ${dragData.value}.`);
+                if (isVerbose && isValid) console.log(`    ✅ Accepting ${targetLogic.node.name}: Dragged is single Ace to empty Foundation.`);
+                return isValid;
             }
         } 
         else {
@@ -424,29 +384,31 @@ export class CardLogic extends Component {
             if (!targetData) return false;
 
             if (targetLogic.holderType === HolderType.TABLEAU) {
-                return (dragData.isRed !== targetData.isRed) && (targetData.value === dragData.value + 1);
+                const isValid = (dragData.isRed !== targetData.isRed) && (targetData.value === dragData.value + 1);
+                if (isVerbose && !isValid) console.log(`    ❌ Rejecting ${targetLogic.node.name} (Tableau): Needs alternating color & n-1. Target [Red:${targetData.isRed}, Val:${targetData.value}] vs Dragged [Red:${dragData.isRed}, Val:${dragData.value}].`);
+                if (isVerbose && isValid) console.log(`    ✅ Accepting ${targetLogic.node.name} (Tableau): Valid alternating sequence.`);
+                return isValid;
             } else if (targetLogic.holderType === HolderType.FOUNDATION) {
-                return (dragData.suit === targetData.suit) && (dragData.value === targetData.value + 1) && this._draggedCards.length === 1;
+                const isValid = (dragData.suit === targetData.suit) && (dragData.value === targetData.value + 1) && this._draggedCards.length === 1;
+                if (isVerbose && !isValid) console.log(`    ❌ Rejecting ${targetLogic.node.name} (Foundation): Needs matching suit & n+1 & single card. Target [Suit:${targetData.suit}, Val:${targetData.value}] vs Dragged [Suit:${dragData.suit}, Val:${dragData.value}].`);
+                if (isVerbose && isValid) console.log(`    ✅ Accepting ${targetLogic.node.name} (Foundation): Valid ascending suit sequence.`);
+                return isValid;
             }
         }
         return false;
     }
 
     returnCardsToOriginal() {
-        console.log("[CardLogic] ↩️ Drop invalid. Returning.");
-        // 🌟 FIX ADDED HERE: Lock the animation state so rapid inputs are ignored
         this._isAnimating = true; 
 
         const overlayTrans = this.gameManager.globalOverlay.getComponent(UITransform);
         const parentTrans = this._originalParent.getComponent(UITransform);
 
-        // Counter to track when animations are done
         let completedCount = 0;
         const totalCards = this._draggedCards.length;
 
         this._draggedCards.forEach((card, index) => {
             const originalPos = this._originalPositions[index];
-            
             const worldDest = parentTrans.convertToWorldSpaceAR(originalPos);
             const overlayDest = overlayTrans.convertToNodeSpaceAR(worldDest);
 
@@ -458,9 +420,6 @@ export class CardLogic extends Component {
                 )
                 .call(() => {
                     completedCount++;
-                    
-                    // 🌟 FIX: Only restore the stack when the LAST card arrives.
-                    // This prevents race conditions that reverse the order.
                     if (completedCount === totalCards) {
                         this.finalizeReturn();
                     }
@@ -469,27 +428,17 @@ export class CardLogic extends Component {
         });
     }
 
-    // Helper to restore order safely
     finalizeReturn() {
         this._draggedCards.forEach((card, index) => {
-            // 1. Put back in parent
             card.setParent(this._originalParent);
-            
-            // 2. Reset Position
             card.setPosition(this._originalPositions[index]);
-            
-            // 3. Restore strict order
-            // Since we captured the indices correctly now, this will restore the exact order.
             card.setSiblingIndex(this._originalSiblingIndices[index]);
             
-            // 4. Ensure opacity is back
             const op = card.getComponent(UIOpacity) || card.addComponent(UIOpacity);
             op.opacity = 255;
         });
 
         this._draggedCards = [];
-        
-        // 🌟 FIX ADDED HERE: Unlock the interaction state so the user can grab cards from this pile again
         this._isAnimating = false; 
     }
 
@@ -511,21 +460,32 @@ export class CardLogic extends Component {
     // =========================================================================
 
     handleStandardClick(event: EventTouch) {
+        const touchUILoc = event.getUILocation();
+        console.log(`\n%c[Click Event] Registered click on stack: ${this.node.name} at UILoc: (${touchUILoc.x.toFixed(2)}, ${touchUILoc.y.toFixed(2)})`, "color: #E91E63; font-weight: bold;");
+
         if (this.holderType === HolderType.FOUNDATION) {
+            console.log(`%c  -> Invalid Click: Cannot auto-move cards out of Foundation stacks.`, "color: #F44336");
             this.playSFX(this.errorSound);
             this.showWrongFeedback(event, null);
             return;
         }
 
-        if (this._isAnimating) return;
+        if (this._isAnimating) {
+            console.log(`%c  -> Invalid Click: Stack ${this.node.name} is currently locked/animating.`, "color: #F44336");
+            return;
+        }
 
         if (this.holderType === HolderType.STOCK) {
+            console.log(`%c  -> Routing click to Stock Drawer logic.`, "color: #9C27B0");
             this.handleStockClick();
             return;
         }
 
         const activeFlippers = this.node.getComponentsInChildren(CardFlipper);
-        if (activeFlippers.some(flipper => flipper.isFlipping)) return; 
+        if (activeFlippers.some(flipper => flipper.isFlipping)) {
+            console.log(`%c  -> Invalid Click: A card in this stack is currently flipping.`, "color: #F44336");
+            return; 
+        }
 
         const faceUpCards = this.node.children.filter(c => 
             c !== this.placeholderNode && 
@@ -539,12 +499,16 @@ export class CardLogic extends Component {
             const topCard = faceUpCards[faceUpCards.length - 1];
             const topData = this.getCardData(topCard);
 
-            if (topData && this.findFoundationMove(topData, [topCard])) {
+            console.log(`%c  -> Clicked card identified as: ${topCard.name}. Checking for valid auto-moves...`, "color: #2196F3");
+
+            // Check Foundation first
+            if (topData && this.findFoundationMove(topData, [topCard], true)) {
                 return; 
             }
 
+            // Then check Tableau
             if (this.holderType === HolderType.WASTE) {
-                if (topData && this.findValidMove(topData, [topCard])) {
+                if (topData && this.findValidMove(topData, [topCard], true)) {
                     return; 
                 }
             } else {
@@ -553,13 +517,16 @@ export class CardLogic extends Component {
                     const headData = this.getCardData(headCard);
                     const subStack = faceUpCards.slice(i); 
                     
-                    if (headData && this.findValidMove(headData, subStack)) {
+                    if (headData && this.findValidMove(headData, subStack, true)) {
                         return;
                     }
                 }
             }
+        } else {
+             console.log(`%c  -> Invalid Click: Stack ${this.node.name} has no face-up cards to move.`, "color: #F44336");
         }
 
+        console.log(`%c  -> ❌ FAILED: No valid auto-move destinations found for this click.`, "color: #F44336; font-weight: bold;");
         this.playSFX(this.errorSound);
         this.showWrongFeedback(event, this.getCardUnderTouch(event.getUILocation()));
     }
@@ -581,9 +548,10 @@ export class CardLogic extends Component {
 
         if (stockCards.length > 0) {
             const topCard = stockCards[stockCards.length - 1];
-            // this.playSFX(this.successSound);
             this._isAnimating = true;
             topCard.setSiblingIndex(this.node.children.length - 1); 
+
+            console.log(`%c[Stock Click] Drawing card ${topCard.name} to Waste.`, "color: #4CAF50; font-weight: bold;");
 
             if (wasteLogic) {
                 this.executeStackMove([topCard], wasteLogic, () => {
@@ -606,10 +574,12 @@ export class CardLogic extends Component {
                 if (this.emptyStockVisual) this.emptyStockVisual.active = true;
                 if (this.placeholderNode) this.placeholderNode.active = false;
                 if (this.visualDeckTop) this.visualDeckTop.active = false;
+                console.log(`%c[Stock Click] ❌ Invalid: Stock and Waste are both completely empty.`, "color: #F44336");
                 this.playSFX(this.errorSound);
                 return;
             }
 
+            console.log(`%c[Stock Click] Stock empty! Recycling ${wasteCards.length} cards from Waste back to Stock.`, "color: #FFC107; font-weight: bold;");
             this.playSFX(this.successSound); 
             this._isAnimating = true;
 
@@ -676,243 +646,255 @@ export class CardLogic extends Component {
             if (wasteLogic) wasteLogic.updatePlaceholderVisibility();
         }
     }
-executeStackMove(nodesToMove: Node[], target: CardLogic, onComplete?: () => void) {
-        if (!this.gameManager || !this.gameManager.globalOverlay) {
-            if (onComplete) onComplete(); 
-            return;
-        }
 
-        // 🌟 FIX: Lock both the source and the target immediately
-        this.setAnimationLock(true);
-        target.setAnimationLock(true);
+    executeStackMove(nodesToMove: Node[], target: CardLogic, onComplete?: () => void) {
+        if (!this.gameManager || !this.gameManager.globalOverlay) {
+            if (onComplete) onComplete(); 
+            return;
+        }
 
-        const overlay = this.gameManager.globalOverlay;
-        const overlayTransform = overlay.getComponent(UITransform);
-        const targetLayout = target.getComponent(Layout);
+        this.setAnimationLock(true);
+        target.setAnimationLock(true);
 
-        if (this.gameManager) this.gameManager.addValidMove(this.node); 
+        const overlay = this.gameManager.globalOverlay;
+        const overlayTransform = overlay.getComponent(UITransform);
+        const targetLayout = target.getComponent(Layout);
 
-        // =========================================================
-        // 1. STOCK DRAW LOGIC
-        // =========================================================
-        if (this.holderType === HolderType.STOCK) {
-            let completedCount = 0;
-            const totalCount = nodesToMove.length;
-            nodesToMove.forEach(cardNode => {
-                const startWorldPos = cardNode.getWorldPosition().clone();
-                const startWorldScale = cardNode.getWorldScale().clone(); 
-                const targetWorldPos = target.node.getWorldPosition().clone();
+        if (this.gameManager) this.gameManager.addValidMove(this.node); 
 
-                cardNode.setParent(overlay);
-                cardNode.setWorldScale(startWorldScale); 
-                const baseScale = cardNode.scale.clone(); 
-                
-                let startLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(startWorldPos) : startWorldPos;
-                let targetLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(targetWorldPos) : targetWorldPos;
+        // =========================================================
+        // 1. STOCK DRAW LOGIC
+        // =========================================================
+        if (this.holderType === HolderType.STOCK) {
+            let completedCount = 0;
+            const totalCount = nodesToMove.length;
+            nodesToMove.forEach(cardNode => {
+                const startWorldPos = cardNode.getWorldPosition().clone();
+                const startWorldScale = cardNode.getWorldScale().clone(); 
+                const targetWorldPos = target.node.getWorldPosition().clone();
 
-                cardNode.setPosition(startLocalPos);
-                
-                const midX = (startLocalPos.x + targetLocalPos.x) / 2;
-                const midY = (startLocalPos.y + targetLocalPos.y) / 2 + 60; 
-                const peakPos = new Vec3(midX, midY, 0);
-                const messyPileAngle = (Math.random() * 4) - 2; 
+                cardNode.setParent(overlay);
+                cardNode.setWorldScale(startWorldScale); 
+                const baseScale = cardNode.scale.clone(); 
+                
+                let startLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(startWorldPos) : startWorldPos;
+                let targetLocalPos = overlayTransform ? overlayTransform.convertToNodeSpaceAR(targetWorldPos) : targetWorldPos;
 
-                cardNode.setSiblingIndex(999); 
-                const duration = 0.35; 
+                cardNode.setPosition(startLocalPos);
+                
+                const midX = (startLocalPos.x + targetLocalPos.x) / 2;
+                const midY = (startLocalPos.y + targetLocalPos.y) / 2 + 60; 
+                const peakPos = new Vec3(midX, midY, 0);
+                const messyPileAngle = (Math.random() * 4) - 2; 
 
-                tween(cardNode)
-                    .parallel(
-                        tween()
-                            .to(duration * 0.5, { position: peakPos }, { easing: 'sineOut' }) 
-                            .to(duration * 0.5, { position: targetLocalPos }, { easing: 'sineIn' }),
+                cardNode.setSiblingIndex(999); 
+                const duration = 0.35; 
 
-                        tween()
-                            .to(duration * 0.5, { scale: new Vec3(0, baseScale.y * 1.15, baseScale.z) }, { easing: 'sineIn' }) 
-                            .call(() => {
-                                const flipper = cardNode.getComponent(CardFlipper);
-                                const sprite = cardNode.getComponent(Sprite);
-                                if (flipper && sprite && flipper.faceUpSprite) {
-                                    sprite.spriteFrame = flipper.faceUpSprite;
-                                    cardNode.name = flipper.faceUpSprite.name;
-                                }
-                            })
-                            .to(duration * 0.5, { scale: baseScale }, { easing: 'sineOut' }),
-                        tween().to(duration, { angle: messyPileAngle })
-                    )
-                    .call(() => {
-                        if (target.node && isValid(target.node)) {
-                            cardNode.setParent(target.node);
-                            cardNode.setPosition(0, 0, 0); 
-                            cardNode.setScale(1, 1, 1); 
-                            cardNode.angle = messyPileAngle; 
-                            
-                            tween(cardNode).to(0.1, { scale: new Vec3(1.05, 0.95, 1) }).to(0.15, { scale: new Vec3(1, 1, 1) }).start();
-                            this.updatePlaceholderVisibility();
-                            target.updatePlaceholderVisibility();
+                tween(cardNode)
+                    .parallel(
+                        tween()
+                            .to(duration * 0.5, { position: peakPos }, { easing: 'sineOut' }) 
+                            .to(duration * 0.5, { position: targetLocalPos }, { easing: 'sineIn' }),
 
-                        }
-                        completedCount++;
-                        if (completedCount === totalCount) {
-                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
+                        tween()
+                            .to(duration * 0.5, { scale: new Vec3(0, baseScale.y * 1.15, baseScale.z) }, { easing: 'sineIn' }) 
+                            .call(() => {
+                                const flipper = cardNode.getComponent(CardFlipper);
+                                const sprite = cardNode.getComponent(Sprite);
+                                if (flipper && sprite && flipper.faceUpSprite) {
+                                    sprite.spriteFrame = flipper.faceUpSprite;
+                                    cardNode.name = flipper.faceUpSprite.name;
+                                }
+                            })
+                            .to(duration * 0.5, { scale: baseScale }, { easing: 'sineOut' }),
+                        tween().to(duration, { angle: messyPileAngle })
+                    )
+                    .call(() => {
+                        if (target.node && isValid(target.node)) {
+                            cardNode.setParent(target.node);
+                            cardNode.setPosition(0, 0, 0); 
+                            cardNode.setScale(1, 1, 1); 
+                            cardNode.angle = messyPileAngle; 
+                            
+                            tween(cardNode).to(0.1, { scale: new Vec3(1.05, 0.95, 1) }).to(0.15, { scale: new Vec3(1, 1, 1) }).start();
+                            this.updatePlaceholderVisibility();
+                            target.updatePlaceholderVisibility();
 
-                            // 🌟 FIX: Unlock when finished
-                            this.setAnimationLock(false);
-                            target.setAnimationLock(false);
+                        }
+                        completedCount++;
+                        if (completedCount === totalCount) {
+                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
+                            this.setAnimationLock(false);
+                            target.setAnimationLock(false);
+                            if (onComplete) onComplete(); 
+                        }
+                    })
+                    .start();
+            });
+            return; 
+        }
 
-                            if (onComplete) onComplete(); 
-                        }
-                    })
-                    .start();
-            });
-            return; 
-        }
+        // =========================================================
+        // 2. STANDARD MOVE LOGIC
+        // =========================================================
+        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
+        
+        nodesToMove.forEach(cardNode => {
+            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+            op.opacity = 0; 
+            cardNode.setParent(target.node); 
+        });
 
-        // =========================================================
-        // 2. STANDARD MOVE LOGIC
-        // =========================================================
-        const startWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-        const startWorldScales = nodesToMove.map(node => node.getWorldScale().clone());
-        
-        nodesToMove.forEach(cardNode => {
-            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
-            op.opacity = 0; 
-            cardNode.setParent(target.node); 
-        });
+        target.updatePlaceholderVisibility(); 
+        if (targetLayout) targetLayout.updateLayout(); 
+        this.updatePlaceholderVisibility(); 
 
-        target.updatePlaceholderVisibility(); 
-        if (targetLayout) targetLayout.updateLayout(); 
-        this.updatePlaceholderVisibility(); 
+        target.node.updateWorldTransform(); 
+        nodesToMove.forEach(node => node.updateWorldTransform()); 
 
-        target.node.updateWorldTransform(); 
-        nodesToMove.forEach(node => node.updateWorldTransform()); 
+        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
+        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
 
-        const finalWorldPositions = nodesToMove.map(node => node.getWorldPosition().clone());
-        const finalLocalPositions = nodesToMove.map(node => node.getPosition().clone());
+        nodesToMove.forEach((cardNode, index) => {
+            cardNode.setParent(overlay);
+            cardNode.setWorldPosition(startWorldPositions[index]);
+            cardNode.setWorldScale(startWorldScales[index]);
+            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
+            op.opacity = 255;
+        });
 
-        nodesToMove.forEach((cardNode, index) => {
-            cardNode.setParent(overlay);
-            cardNode.setWorldPosition(startWorldPositions[index]);
-            cardNode.setWorldScale(startWorldScales[index]);
-            const op = cardNode.getComponent(UIOpacity) || cardNode.addComponent(UIOpacity);
-            op.opacity = 255;
-        });
+        let completedCount = 0;
+        const totalCards = nodesToMove.length;
 
-        let completedCount = 0;
-        const totalCards = nodesToMove.length;
+        if (targetLayout) {
+            targetLayout.enabled = false; 
+        }
 
-        if (targetLayout) {
-            targetLayout.enabled = false; 
-        }
+        nodesToMove.forEach((cardNode, index) => {
+            let targetPosInOverlay = overlayTransform ? overlayTransform.convertToNodeSpaceAR(finalWorldPositions[index]) : finalWorldPositions[index];
+            const startPos = cardNode.position.clone();
+            const originalScale = cardNode.scale.clone();
 
-        nodesToMove.forEach((cardNode, index) => {
-            let targetPosInOverlay = overlayTransform ? overlayTransform.convertToNodeSpaceAR(finalWorldPositions[index]) : finalWorldPositions[index];
-            const startPos = cardNode.position.clone();
-            const originalScale = cardNode.scale.clone();
+            const midX = (startPos.x + targetPosInOverlay.x) / 2;
+            const midY = (startPos.y + targetPosInOverlay.y) / 2 + 150; 
+            const midPos = new Vec3(midX, midY, 0);
 
-            const midX = (startPos.x + targetPosInOverlay.x) / 2;
-            const midY = (startPos.y + targetPosInOverlay.y) / 2 + 150; 
-            const midPos = new Vec3(midX, midY, 0);
+            const randomTilt = (Math.random() * 20) - 10;
+            const flightDuration = 0.45; 
+            const staggerDelay = index * 0.05; 
 
-            const randomTilt = (Math.random() * 20) - 10;
-            const flightDuration = 0.45; 
-            const staggerDelay = index * 0.05; 
+            cardNode.setSiblingIndex(999); 
 
-            cardNode.setSiblingIndex(999); 
+            tween(cardNode)
+                .delay(staggerDelay)
+                .parallel(
+                    tween()
+                        .to(flightDuration * 0.5, { position: midPos }, { easing: 'sineOut' })
+                        .to(flightDuration * 0.5, { position: targetPosInOverlay }, { easing: 'quadIn' }),
+                    tween()
+                        .to(flightDuration * 0.5, { scale: new Vec3(originalScale.x * 1.2, originalScale.y * 1.2, 1) }, { easing: 'sineOut' })
+                        .to(flightDuration * 0.5, { scale: originalScale }, { easing: 'sineIn' }),
+                    tween().to(flightDuration * 0.8, { angle: randomTilt }).to(flightDuration * 0.2, { angle: 0 }) 
+                )
+                .call(() => {
+                    if (target.node && isValid(target.node)) {
+                        cardNode.setParent(target.node);
+                        cardNode.setPosition(finalLocalPositions[index]);
+                        cardNode.setScale(new Vec3(1, 1, 1)); 
 
-            tween(cardNode)
-                .delay(staggerDelay)
-                .parallel(
-                    tween()
-                        .to(flightDuration * 0.5, { position: midPos }, { easing: 'sineOut' })
-                        .to(flightDuration * 0.5, { position: targetPosInOverlay }, { easing: 'quadIn' }),
-                    tween()
-                        .to(flightDuration * 0.5, { scale: new Vec3(originalScale.x * 1.2, originalScale.y * 1.2, 1) }, { easing: 'sineOut' })
-                        .to(flightDuration * 0.5, { scale: originalScale }, { easing: 'sineIn' }),
-                    tween().to(flightDuration * 0.8, { angle: randomTilt }).to(flightDuration * 0.2, { angle: 0 }) 
-                )
-                .call(() => {
-                    if (target.node && isValid(target.node)) {
-                        cardNode.setParent(target.node);
-                        cardNode.setPosition(finalLocalPositions[index]);
-                        cardNode.setScale(new Vec3(1, 1, 1)); 
+                        tween(cardNode)
+                            .to(0.1, { scale: new Vec3(1.05, 0.95, 1) })
+                            .to(0.15, { scale: new Vec3(1, 1, 1) })
+                            .start();
 
-                        tween(cardNode)
-                            .to(0.1, { scale: new Vec3(1.05, 0.95, 1) })
-                            .to(0.15, { scale: new Vec3(1, 1, 1) })
-                            .start();
+                        completedCount++;
 
-                        completedCount++;
+                        if (completedCount === totalCards) {
+                            nodesToMove.forEach(n => {
+                                if (n.parent) n.setSiblingIndex(n.parent.children.length - 1);
+                            });
 
-                        if (completedCount === totalCards) {
-                            nodesToMove.forEach(n => {
-                                if (n.parent) n.setSiblingIndex(n.parent.children.length - 1);
-                            });
+                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
+                            this.checkAndFlipRevealedCard(); 
+                            
+                            this.scheduleOnce(() => {
+                                if (targetLayout && isValid(targetLayout.node)) {
+                                    targetLayout.enabled = true;
+                                    targetLayout.updateLayout();
+                                }
+                                
+                                if (this.holderType === HolderType.WASTE) this.checkDeckDepletion();
+                                
+                                this.setAnimationLock(false);
+                                target.setAnimationLock(false);
 
-                            this.playSuccessEffect(nodesToMove[nodesToMove.length - 1]); 
-                            this.checkAndFlipRevealedCard(); 
-                            
-                            this.scheduleOnce(() => {
-                                if (targetLayout && isValid(targetLayout.node)) {
-                                    targetLayout.enabled = true;
-                                    targetLayout.updateLayout();
-                                }
-                                
-                                if (this.holderType === HolderType.WASTE) this.checkDeckDepletion();
-                                
-                                // 🌟 FIX: Unlock both the target and the source now that animation is fully done
-                                this.setAnimationLock(false);
-                                target.setAnimationLock(false);
+                                if (onComplete) onComplete(); 
 
-                                if (onComplete) onComplete(); 
+                            }, 0.3); 
+                        }
+                    }
+                })
+                .start();
+        });
+    }
 
-                            }, 0.3); 
-                        }
-                    }
-                })
-                .start();
-        });
-    }
-
-    findFoundationMove(movingData: CardData, sequence: Node[]): boolean {
-        if (sequence.length > 1) return false; 
+    findFoundationMove(movingData: CardData, sequence: Node[], isVerbose: boolean = false): boolean {
+        if (sequence.length > 1) {
+            if (isVerbose) console.log(`      -> Rejecting Foundation: Cannot auto-move multiple cards to foundation.`);
+            return false; 
+        }
         if (!this.gameManager || !this.gameManager.foundationNodes) return false;
         
         for (const targetNode of this.gameManager.foundationNodes) {
             const targetLogic = targetNode.getComponent(CardLogic);
             if (!targetLogic) continue;
+            if (isVerbose) console.log(`    -> Checking Foundation Stack: ${targetNode.name}...`);
 
-            // 🌟 FIX: Ignore targets that are currently animating
-            if (targetLogic.getAnimationLock()) continue;
+            if (targetLogic.getAnimationLock()) {
+                if (isVerbose) console.log(`      -> Rejecting: Stack is animating/locked.`);
+                continue;
+            }
 
             const targetCards = targetLogic.node.children.filter(c => c.name.startsWith("card") && !c.name.includes("foundation_A"));
             const isTargetEmpty = targetCards.length === 0;
 
             if (isTargetEmpty && movingData.value === 0) {
+                if (isVerbose) console.log(`      ✅ SUCCESS: Found empty foundation for Ace.`);
                 this.executeStackMove(sequence, targetLogic);
                 return true;
+            } else if (isTargetEmpty) {
+                if (isVerbose) console.log(`      -> Rejecting: Foundation is empty, but card is not an Ace (Value: ${movingData.value}).`);
             }
 
             if (!isTargetEmpty) {
                 const topTargetCard = targetCards[targetCards.length - 1];
                 const targetData = this.getCardData(topTargetCard);
+                
                 if (targetData && targetData.suit === movingData.suit && movingData.value === targetData.value + 1) {
+                    if (isVerbose) console.log(`      ✅ SUCCESS: Found valid n+1 matching suit Foundation.`);
                     this.executeStackMove(sequence, targetLogic);
                     return true;
+                } else if (targetData) {
+                    if (isVerbose) console.log(`      -> Rejecting: Sequence gap or suit mismatch. Target[Suit:${targetData.suit}, Val:${targetData.value}] Dragged[Suit:${movingData.suit}, Val:${movingData.value}]`);
                 }
             }
         }
         return false;
     }
 
-    findValidMove(movingData: CardData, sequence: Node[]): boolean {
+    findValidMove(movingData: CardData, sequence: Node[], isVerbose: boolean = false): boolean {
         if (!this.gameManager || !this.gameManager.tableauNodes) return false;
         
         for (const targetNode of this.gameManager.tableauNodes) {
             const target = targetNode.getComponent(CardLogic);
             if (!target || target === this || target.holderType !== HolderType.TABLEAU) continue; 
             
-            // 🌟 FIX: Ignore targets that are currently animating
-            if (target.getAnimationLock()) continue;
+            if (isVerbose) console.log(`    -> Checking Tableau Stack: ${targetNode.name}...`);
+            if (target.getAnimationLock()) {
+                if (isVerbose) console.log(`      -> Rejecting: Stack is animating/locked.`);
+                continue;
+            }
 
             const targetChildren = target.node.children.filter(c => 
                 c !== target.placeholderNode && 
@@ -923,15 +905,22 @@ executeStackMove(nodesToMove: Node[], target: CardLogic, onComplete?: () => void
 
             if (isTargetEmpty) {
                 if (movingData.value === 12) { 
+                    if (isVerbose) console.log(`      ✅ SUCCESS: Found empty Tableau for King.`);
                     this.executeStackMove(sequence, target);
                     return true;
+                } else {
+                    if (isVerbose) console.log(`      -> Rejecting: Tableau is empty, but card is not a King (Value: ${movingData.value}).`);
                 }
             } else {
                 const bottomTarget = targetChildren[targetChildren.length - 1];
                 const targetData = this.getCardData(bottomTarget); 
+                
                 if (targetData && (targetData.isRed !== movingData.isRed) && (targetData.value === movingData.value + 1)) {
+                    if (isVerbose) console.log(`      ✅ SUCCESS: Found valid alternating color & n-1 Tableau.`);
                     this.executeStackMove(sequence, target);
                     return true;
+                } else if (targetData) {
+                    if (isVerbose) console.log(`      -> Rejecting: Invalid color or sequence. Target[Red:${targetData.isRed}, Val:${targetData.value}] Dragged[Red:${movingData.isRed}, Val:${movingData.value}]`);
                 }
             }
         }
@@ -1064,8 +1053,6 @@ executeStackMove(nodesToMove: Node[], target: CardLogic, onComplete?: () => void
         this.playSFX(this.successSound);
 
         const effectContainer = new Node('EffectContainer');
-        
-        // 🌟 FIX: Parent to globalOverlay so it doesn't hide behind the Tableau/Foundation
         const topLayer = this.gameManager?.globalOverlay || this.node.parent;
         if (topLayer) {
             topLayer.addChild(effectContainer); 
